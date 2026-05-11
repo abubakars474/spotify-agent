@@ -1,9 +1,15 @@
-node_modules
-dist
-build
-out
-
+node_modules/
+dist/
+out/
+build/
+*.dmg
+*.exe
+*.zip
 .DS_Store
-*.log
 
-/tmp
+# Electron cache
+.cache/
+electron-builder-cache/
+
+# logs
+npm-debug.log*
