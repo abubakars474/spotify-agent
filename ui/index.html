@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@400;700;800&display=swap');
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --green: #1DB954;
+      --green-dim: #17a349;
+      --bg: #0a0a0a;
+      --surface: #111111;
+      --border: #1e1e1e;
+      --text: #f0f0f0;
+      --muted: #555;
+      --red: #e8444d;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'DM Mono', monospace;
+      width: 400px;
+      height: 220px;
+      overflow: hidden;
+      user-select: none;
+      -webkit-app-region: drag;
+    }
+
+    /* Subtle grid background */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(var(--border) 1px, transparent 1px),
+        linear-gradient(90deg, var(--border) 1px, transparent 1px);
+      background-size: 28px 28px;
+      opacity: 0.4;
+      pointer-events: none;
+    }
+
+    /* Glow orb */
+    body::after {
+      content: '';
+      position: fixed;
+      width: 220px;
+      height: 220px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(29,185,84,0.08) 0%, transparent 70%);
+      top: -60px;
+      right: -40px;
+      pointer-events: none;
+      transition: background 0.6s ease;
+    }
+
+    body.running::after {
+      background: radial-gradient(circle, rgba(29,185,84,0.18) 0%, transparent 70%);
+    }
+
+    .container {
+      position: relative;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 16px 20px 14px;
+      -webkit-app-region: drag;
+    }
+
+    /* Top row */
+    .top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .logo-icon {
+      width: 22px;
+      height: 22px;
+      background: var(--green);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .logo-icon svg {
+      width: 12px;
+      height: 12px;
+    }
+
+    .logo-text {
+      font-family: 'Syne', sans-serif;
+      font-weight: 800;
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      color: var(--text);
+      text-transform: uppercase;
+    }
+
+    .logo-text span {
+      color: var(--green);
+    }
+
+    /* Status pill */
+    .status-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 4px 10px;
+      font-size: 10px;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      transition: all 0.4s ease;
+    }
+
+    .status-pill.active {
+      border-color: rgba(29,185,84,0.3);
+      color: var(--green);
+    }
+
+    .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--muted);
+      transition: background 0.4s ease;
+    }
+
+    .status-pill.active .dot {
+      background: var(--green);
+      box-shadow: 0 0 6px var(--green);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* Middle — waveform visualizer */
+    .visualizer {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      height: 42px;
+      padding: 0 8px;
+    }
+
+    .bar {
+      width: 3px;
+      background: var(--border);
+      border-radius: 2px;
+      height: 6px;
+      transition: background 0.4s ease;
+    }
+
+    .running .bar {
+      background: var(--green);
+      animation: wave var(--dur) ease-in-out infinite alternate;
+    }
+
+    @keyframes wave {
+      from { height: 4px; opacity: 0.5; }
+      to   { height: var(--h); opacity: 1; }
+    }
+
+    /* Track info */
+    .track-info {
+      text-align: center;
+      height: 28px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .track-label {
+      font-size: 10px;
+      color: var(--muted);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .track-label.active {
+      color: var(--green);
+    }
+
+    /* Bottom — controls */
+    .controls {
+      display: flex;
+      gap: 10px;
+      -webkit-app-region: no-drag;
+    }
+
+    .btn {
+      flex: 1;
+      height: 38px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--muted);
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      -webkit-app-region: no-drag;
+    }
+
+    .btn:hover {
+      color: var(--text);
+      border-color: #333;
+      background: #181818;
+    }
+
+    .btn:active {
+      transform: scale(0.97);
+    }
+
+    .btn-start {
+      border-color: rgba(29,185,84,0.25);
+      color: var(--green);
+    }
+
+    .btn-start:hover {
+      background: rgba(29,185,84,0.08);
+      border-color: rgba(29,185,84,0.5);
+      color: var(--green);
+      box-shadow: 0 0 16px rgba(29,185,84,0.1);
+    }
+
+    .btn-start:disabled {
+      opacity: 0.3;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .btn-stop {
+      border-color: rgba(232,68,77,0.2);
+      color: var(--red);
+      opacity: 0.35;
+      pointer-events: none;
+    }
+
+    .btn-stop.enabled {
+      opacity: 1;
+      pointer-events: all;
+    }
+
+    .btn-stop.enabled:hover {
+      background: rgba(232,68,77,0.08);
+      border-color: rgba(232,68,77,0.4);
+      color: var(--red);
+    }
+
+    /* Divider line */
+    .divider {
+      width: 100%;
+      height: 1px;
+      background: var(--border);
+      margin: 0;
+    }
+
+  </style>
+</head>
+<body>
+
+  <div class="container" id="app">
+
+    <div class="top">
+      <div class="logo">
+        <div class="logo-icon">
+          <svg viewBox="0 0 12 12" fill="none">
+            <circle cx="6" cy="6" r="5" stroke="white" stroke-width="1.2"/>
+            <path d="M3 4.5C4.5 4 7.5 4 9 4.8M3 6C4.3 5.6 7 5.6 9 6.2M3.5 7.5C4.8 7.2 7.2 7.2 8.5 7.7" stroke="white" stroke-width="1" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <span class="logo-text">Spotify <span>Agent</span></span>
+      </div>
+
+      <div class="status-pill" id="statusPill">
+        <div class="dot"></div>
+        <span id="statusText">IDLE</span>
+      </div>
+    </div>
+
+    <div class="visualizer" id="visualizer"></div>
+
+    <div class="track-info">
+      <span class="track-label" id="trackLabel">— waiting to start —</span>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="controls">
+      <button class="btn btn-start" id="btnStart" onclick="start()">
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
+          <polygon points="2,1 9,5 2,9"/>
+        </svg>
+        START
+      </button>
+      <button class="btn btn-stop" id="btnStop" onclick="stop()">
+        <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor">
+          <rect width="8" height="8" rx="1"/>
+        </svg>
+        STOP
+      </button>
+    </div>
+
+  </div>
+
+  <script>
+    const { ipcRenderer } = require('electron');
+
+    const app       = document.getElementById('app');
+    const pill      = document.getElementById('statusPill');
+    const statusTxt = document.getElementById('statusText');
+    const trackLbl  = document.getElementById('trackLabel');
+    const btnStart  = document.getElementById('btnStart');
+    const btnStop   = document.getElementById('btnStop');
+    const viz       = document.getElementById('visualizer');
+
+    // Build waveform bars
+    const BAR_COUNT = 32;
+    const heights   = [6,8,14,20,28,34,38,34,28,22,16,24,30,36,30,22,18,26,34,38,32,24,16,22,30,36,28,20,14,10,8,6];
+    for (let i = 0; i < BAR_COUNT; i++) {
+      const b = document.createElement('div');
+      b.className = 'bar';
+      b.style.setProperty('--h', heights[i] + 'px');
+      b.style.setProperty('--dur', (0.6 + Math.random() * 0.8).toFixed(2) + 's');
+      b.style.animationDelay = (i * 0.03).toFixed(2) + 's';
+      viz.appendChild(b);
+    }
+
+    let running = false;
+
+    function setRunning(state) {
+      running = state;
+      if (state) {
+        app.classList.add('running');
+        document.body.classList.add('running');
+        pill.classList.add('active');
+        statusTxt.textContent = 'RUNNING';
+        trackLbl.textContent  = 'automation active';
+        trackLbl.classList.add('active');
+        btnStart.disabled = true;
+        btnStop.classList.add('enabled');
+      } else {
+        app.classList.remove('running');
+        document.body.classList.remove('running');
+        pill.classList.remove('active');
+        statusTxt.textContent = 'IDLE';
+        trackLbl.textContent  = '— waiting to start —';
+        trackLbl.classList.remove('active');
+        btnStart.disabled = false;
+        btnStop.classList.remove('enabled');
+      }
+    }
+
+    function start() {
+      ipcRenderer.send('start');
+      setRunning(true);
+    }
+
+    function stop() {
+      ipcRenderer.send('stop');
+      setRunning(false);
+    }
+  </script>
+
+</body>
+</html>

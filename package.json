@@ -1,0 +1,39 @@
+{
+  "name": "spotify-agent",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build-win": "electron-builder --win",
+    "build-mac": "electron-builder --mac"
+  },
+  "dependencies": {
+    "playwright": "^1.40.0"
+  },
+  "devDependencies": {
+    "electron": "^41.5.0",
+    "electron-builder": "^24.0.0"
+  },
+  "build": {
+    "appId": "com.spotify.ai",
+    "productName": "Spotify Agent",
+    "mac": {
+      "target": "dmg"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "asarUnpack": [
+      "worker.js",
+      "node_modules/playwright/**",
+      "node_modules/playwright-core/**",
+      "node_modules/@playwright/**"
+    ],
+    "nsis": {
+      "oneClick": false
+    },
+    "nodeGypRebuild": false,
+    "buildDependenciesFromSource": false
+  }
+}
