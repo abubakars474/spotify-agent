@@ -32,6 +32,21 @@ function getChromePath() {
     throw new Error('Chrome not found on macOS');
   }
 
+  if (platform === 'linux') {
+    const linuxPaths = [
+      '/usr/bin/google-chrome',
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/chromium',
+      '/usr/bin/chromium-browser'
+    ];
+
+    for (const p of linuxPaths) {
+      if (fs.existsSync(p)) return p;
+    }
+
+    throw new Error('Chrome/Chromium not found on Linux');
+  }
+
   throw new Error('Unsupported OS');
 }
 
