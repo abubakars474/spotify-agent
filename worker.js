@@ -399,10 +399,7 @@ async function playSpotify(url, duration = 30, userBrowser) {
       await page.keyboard.press('Space');
     }
   }else{
-    await page.goto(url, {
-      waitUntil: 'domcontentloaded'
-    });
-
+    await page.goto(url, { waitUntil: 'networkidle' });
     await page.waitForTimeout(8000);
 
     await page.bringToFront();
@@ -416,23 +413,22 @@ async function playSpotify(url, duration = 30, userBrowser) {
     await page.waitForTimeout(300);
     await page.mouse.click(600, 500);
 
-    await page.waitForTimeout(1500);
 
     let clicked = false;
 
     if (await playButton.count() > 0) {
-
+      //await page.keyboard.press('Space');
       try {
 
         await playButton.scrollIntoViewIfNeeded();
 
         await page.waitForTimeout(500);
-
-        await playButton.click({ delay: 250 });
+        await page.keyboard.press('Space');
+        
 
 
       } catch (e) {
-        //await page.keyboard.press('Space');
+        await playButton.click({ delay: 250 });
         console.log('Play click failed, fallback keyboard');
 
       }
