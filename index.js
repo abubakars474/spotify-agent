@@ -1,7 +1,6 @@
 const { app, BrowserWindow, ipcMain, utilityProcess } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
-
 const fs = require('fs');
 const os = require('os');
 
@@ -9,128 +8,63 @@ let win;
 let chromeProcess = null;
 let workerProcess = null;
 
+let userDuration = 30;
+let userEmail = null;
+let userBrowser = 'chrome';
+
 function getChromePath() {
   const platform = os.platform();
-
   if (platform === 'win32') {
     const paths = [
       'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe'
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
     ];
-
-    for (const p of paths) {
-      if (fs.existsSync(p)) return p;
-    }
-
+    for (const p of paths) if (fs.existsSync(p)) return p;
     throw new Error('Chrome not found on Windows');
   }
-
   if (platform === 'darwin') {
-    const macPath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-    if (fs.existsSync(macPath)) return macPath;
-
+    const p = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+    if (fs.existsSync(p)) return p;
     throw new Error('Chrome not found on macOS');
   }
-
   if (platform === 'linux') {
-    const linuxPaths = [
-      '/usr/bin/google-chrome',
-      '/usr/bin/google-chrome-stable',
-      '/usr/bin/chromium',
-      '/usr/bin/chromium-browser'
-    ];
-
-    for (const p of linuxPaths) {
-      if (fs.existsSync(p)) return p;
-    }
-
-    throw new Error('Chrome/Chromium not found on Linux');
+    const paths = ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium'];
+    for (const p of paths) if (fs.existsSync(p)) return p;
+    throw new Error('Chrome not found on Linux');
   }
-
-  throw new Error('Unsupported OS');
 }
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 400,
-    height: 260,
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false
-    }
+    width: 600,
+    height: 450,
+    webPreferences: { nodeIntegration: true, contextIsolation: false }
   });
-
   win.loadFile('ui/index.html');
 }
 
-//
-// START SYSTEM
-//
-async function startSystem() {
-  console.log('START clicked');
-  launchChrome();
-  waitForChromeAndStartWorker();
-}
-
-//
-// SAFE WORKER START
-//
-function waitForChromeAndStartWorker() {
-  let attempts = 0;
-
-  const interval = setInterval(() => {
-    attempts++;
-
-    if (attempts > 15) {
-      clearInterval(interval);
-      console.log('Chrome CDP not ready');
-      return;
-    }
-
-    if (!workerProcess) {
-      startWorker();
-      clearInterval(interval);
-    }
-  }, 1000);
-}
-
-//
-// STOP SYSTEM
-//
-function stopSystem() {
-  console.log('STOP clicked');
-  stopWorker();
-  stopChrome();
-}
-
-//
-// CHROME (CDP MODE)
-//
-function launchChrome() {
+// ============================================================
+// CHROME ONLY — launches real Chrome with CDP for the worker to attach to
+// ============================================================
+function launchChromeWithCDP() {
   if (chromeProcess) return;
 
-  const chromePath = getChromePath();
+  const userDataDir = os.platform() === 'win32'
+    ? 'C:\\temp\\spotify-agent-profile'
+    : '/tmp/spotify-electron-profile';
 
-  const userDataDir =
-    os.platform() === 'win32'
-      ? 'C:\\temp\\spotify-agent-profile'
-      : '/tmp/spotify-electron-profile';
-
-  chromeProcess = spawn(chromePath, [
+  const args = [
     '--remote-debugging-port=9222',
     `--user-data-dir=${userDataDir}`,
     '--new-window',
     '--no-first-run',
     '--no-default-browser-check',
-    'about:blank' // IMPORTANT: avoid auto page race issues
-  ], {
-    detached: true,
-    stdio: 'ignore'
-  });
+    'https://open.spotify.com'
+  ];
 
+  chromeProcess = spawn(getChromePath(), args, { detached: true, stdio: 'ignore' });
   chromeProcess.unref();
-
-  console.log('Chrome launched with CDP:', chromePath);
+  console.log('Chrome launched with CDP');
 }
 
 function stopChrome() {
@@ -140,26 +74,35 @@ function stopChrome() {
   }
 }
 
-//
+// ============================================================
 // WORKER
-//
-function startWorker() {
-  if (workerProcess) return;
+// ============================================================
+function startWorker(mode) {
+  if (workerProcess) {
+    // Worker already running (Firefox/Safari case where worker launched on Open Browser)
+    // Just tell it to start playback
+    workerProcess.postMessage({ type: 'start-playback' });
+    return;
+  }
 
   const workerPath = app.isPackaged
     ? path.join(process.resourcesPath, 'app.asar.unpacked', 'worker.js')
     : path.join(__dirname, 'worker.js');
 
-  console.log('Worker path:', workerPath);
-
   workerProcess = utilityProcess.fork(workerPath);
 
-  workerProcess.on('exit', (code) => {
-    console.log('Worker stopped:', code);
-    workerProcess = null;
+  workerProcess.postMessage({
+    type: 'config',
+    duration: userDuration,
+    email: userEmail,
+    browser: userBrowser,
+    mode: mode  // 'open-only' or 'start-now'
   });
 
-  console.log('Worker started');
+  workerProcess.on('exit', (code) => {
+    console.log('Worker exited:', code);
+    workerProcess = null;
+  });
 }
 
 function stopWorker() {
@@ -169,10 +112,59 @@ function stopWorker() {
   }
 }
 
-//
+function stopSystem() {
+  stopWorker();
+  stopChrome();
+}
+
+// ============================================================
 // IPC
-//
-ipcMain.on('start', () => startSystem());
-ipcMain.on('stop',  () => stopSystem());
+// ============================================================
+
+// "Open Browser" button
+ipcMain.on('open-browser', (event, browser) => {
+  userBrowser = browser || 'chrome';
+  console.log('Open browser:', userBrowser);
+
+  if (userBrowser === 'chrome') {
+    // Chrome: launch the actual browser, worker comes later
+    launchChromeWithCDP();
+  } else {
+    // Firefox / Safari: spawn worker which launches Playwright browser
+    // Worker will idle until 'start-playback' arrives
+    startWorker('open-only');
+  }
+});
+
+// "Start" button
+ipcMain.on('start', (event, data) => {
+  userDuration = Number(data.duration || 30);
+  userEmail    = data.email;
+  userBrowser  = data.browser || 'chrome';
+
+  if (userBrowser === 'chrome') {
+    // Worker not yet spawned — spawn it now to connect to Chrome
+    startWorker('start-now');
+  } else {
+    // Worker already running from "Open Browser" — just send config + start
+    if (workerProcess) {
+      workerProcess.postMessage({
+        type: 'start-playback',
+        duration: userDuration,
+        email: userEmail
+      });
+    } else {
+      // Fallback if user somehow skipped Open Browser
+      startWorker('start-now');
+    }
+  }
+});
+
+ipcMain.on('stop', () => stopSystem());
+
+ipcMain.on('reset', () => {
+  stopSystem();
+  userDuration = 30;
+});
 
 app.whenReady().then(createWindow);
