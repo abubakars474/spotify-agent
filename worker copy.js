@@ -322,100 +322,19 @@ function seedWidevine(targetProfile) {
   }
 }
 
-
-const API_BASE     = 'https://myspotify.anvs.xyz/api/v1/';   // <-- fill in
-const API_USERNAME = 'autoplayer@annanovas.com';
-const API_PASSWORD = 'eN?7#2*P=Pi38%^';
-
-let authToken = null;
-let playlistsLoaded = false;
-
-// ============================================================
-// API HELPERS (Node 18+ has global fetch / FormData)
-// ============================================================
-async function apiLogin() {
-  const form = new FormData();
-  form.append('username', API_USERNAME);
-  form.append('password', API_PASSWORD);
-
-  const res = await fetch(`${API_BASE}login`, { method: 'POST', body: form });
-  const json = await res.json();
-
-  if (json?.data?.token) {
-    authToken = json.data.token;
-    console.log('API login OK');
-    return authToken;
-  }
-  throw new Error('Login failed: ' + JSON.stringify(json));
-}
-
-async function apiFetchPlaylists() {
-  if (!authToken) await apiLogin();
-
-  const res = await fetch(`${API_BASE}playlists`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${authToken}` }
-  });
-
-  // Token expired → re-login once and retry
-  if (res.status === 401) {
-    authToken = null;
-    await apiLogin();
-    return apiFetchPlaylists();
-  }
-
-  const json = await res.json();
-  //console.log(json.data?.play_lists);
-  // Expected shape: { data: [{ id, url }, ...] }
-  return json?.data ? json.data?.play_lists : [];
-}
-
-async function apiNotifyPlayed(playlist) {
-  if (!playlist) return;
-  if (!authToken) await apiLogin();
-
-  const form = new FormData();
-  if (playlist.id)  form.append('play_list_id', String(playlist.id));
-
-  try {
-    const res = await fetch(`${API_BASE}playlists/play`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${authToken}` },
-      body: form
-    });
-
-    //console.log(res);
-
-    if (res.status === 401) {
-      authToken = null;
-      await apiLogin();
-      return apiNotifyPlayed(playlist);
-    }
-
-    console.log('Notified server: playlist', playlist.id, 'played');
-  } catch (e) {
-    console.log('Notify failed:', e.message);
-  }
-}
-
 // ============================================================
 // PLAYLIST LOGIC (mostly unchanged)
 // ============================================================
 async function fetchTask() {
-  // First run, or we finished the current batch → ask the server again
-  if (!playlistsLoaded || currentIndex >= playlists.length) {
-    console.log('Fetching playlists from API...');
-    playlists = await apiFetchPlaylists();
-    playlistsLoaded = true;
-    currentIndex = 0;
-
-    if (playlists.length === 0) {
-      console.log('Empty playlist response — nothing left to play, exiting');
-      process.exit(0);
-    }
-    console.log(`Loaded ${playlists.length} playlists`);
+  playlists = [
+    { id: 1, url: 'https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M' },
+    { id: 2, url: 'https://open.spotify.com/playlist/37i9dQZF1DX4sWSpwq3LiO' },
+    { id: 3, url: 'https://open.spotify.com/playlist/37i9dQZF1DXdPec7aLTmlC' },
+  ];
+  if (currentIndex >= playlists.length) {
+    console.log('All playlists done, stopping...');
+    process.exit(0);
   }
-
   return playlists[currentIndex];
 }
 
@@ -498,15 +417,7 @@ async function playSpotify(url, duration = 30, userBrowser) {
 
 async function stopPlayback() {
   if (!currentPage) return;
-
-  // Capture which playlist just finished BEFORE incrementing
-  const finished = playlists[currentIndex];
-
   await currentPage.close().catch(() => {});
-
-  // Fire-and-forget notification to the server
-  await apiNotifyPlayed(finished);
-
   currentIndex += 1;
   currentPage = null;
   currentTaskId = null;
@@ -532,7 +443,7 @@ async function runLoop() {
         await stopPlayback();
         currentTaskId = task.id;
         console.log('Current browser:'+ userBrowser);
-        await playSpotify(task.spotify_url, currentDuration, userBrowser);
+        await playSpotify(task.url, currentDuration, userBrowser);
       }
     } catch (err) {
       console.log('Loop error:', err.message);
