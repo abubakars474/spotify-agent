@@ -307,6 +307,53 @@
       color: #fff;
     }
 
+    .modal {
+    position: fixed;
+    inset: 0;
+    left: 0;
+    top: 0;
+    background: rgba(0,0,0,0.6);
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    z-index: 9999;
+  }
+
+  .hidden {
+    display: none;
+  }
+
+  .modal-box {
+    background: #fff;
+    padding: 25px;
+    width: 350px;
+    border-radius: 12px;
+    text-align: center;
+  }
+
+  .modal-box h2 {
+    margin-bottom: 15px;
+    color: #333;
+    font-size: 20px;
+  }
+
+  .modal-box p {
+    margin-bottom: 20px;
+    line-height: 1.5;
+    color: #333;
+  }
+
+  .modal-box button {
+    padding: 10px 20px;
+    border: none;
+    background: #1db954;
+    color: white;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
   </style>
 </head>
 <body>
@@ -349,17 +396,17 @@
           <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
             <circle cx="5" cy="5" r="4"/>
           </svg>
-          CHROME
+          Open Browser
         </button>
 
-        <button class="btn btn-start" onclick="initializeBrowser('firefox')">
+        <button class="btn btn-start" onclick="initializeBrowser('firefox')" style="display: none;">
           <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
             <circle cx="5" cy="5" r="4"/>
           </svg>
           FIREFOX
         </button>
 
-        <button class="btn btn-start" onclick="initializeBrowser('safari')">
+        <button class="btn btn-start" onclick="initializeBrowser('safari')" style="display: none;">
           <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
             <circle cx="5" cy="5" r="4"/>
           </svg>
@@ -375,6 +422,7 @@
             id="email"
             type="email"
             placeholder="Email address"
+            value="autoplayer@annanovas.com"
             style="
               width:100%;
               height:38px;
@@ -570,8 +618,37 @@
       document.getElementById('controlSection').style.display = 'block';
       document.getElementById('open_browser').style.display = 'none';
       document.getElementById('statusText').textContent = 'BROWSER READY';
+
+      document.getElementById('loginModal').classList.remove('hidden');
+    }
+
+    function closeLoginModal() {
+      document
+        .getElementById('loginModal')
+        .classList.add('hidden');
     }
   </script>
+
+  <div id="loginModal" class="modal hidden">
+
+    <div class="modal-box">
+
+      <h2>Spotify Login Required</h2>
+
+      <p>
+        Please login to your Spotify account
+        in the opened browser window.
+        <br><br>
+        Audio playback will not work without login.
+      </p>
+
+      <button onclick="closeLoginModal()">
+        OK
+      </button>
+
+    </div>
+
+  </div>
 
 </body>
 </html>
