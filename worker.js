@@ -421,76 +421,94 @@ async function fetchTask() {
 
 
 
-async function playSpotify(url, duration = 30, userBrowser) {
+// Verify playback actually started by watching the bottom-bar pause button
+async function waitForPlaybackStart(page, timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const playing = await page.evaluate(() => {
+        const btn = document.querySelector('[data-testid="control-button-playpause"]');
+        if (!btn) return false;
+        const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+        // When audio is playing, the button's job is to PAUSE
+        return label.includes('pause');
+      });
+      if (playing) return true;
+    } catch (e) { /* page may be navigating */ }
+    await page.waitForTimeout(500);
+  }
+  return false;
+}
+
+async function playSpotify(url, duration = 30, browserName) {
   const page = await context.newPage();
   currentPage = page;
-  const playButton = page.locator('button[data-testid="play-button"]').first();
-  const pauseButton =
-      page.locator('button[data-testid="control-button-pause"]').first();
+  console.log('Opening playlist:', url);
 
-  if(userBrowser==='chrome'){
-    await page.goto(url, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(8000);
-
-    await page.bringToFront();
-    await page.mouse.move(500, 500);
-    await page.mouse.click(500, 500);
-    await page.waitForTimeout(1000);
-
-    
-    if (await playButton.count() > 0) {
-      try {
-        await playButton.click({ force: true });
-        console.log('Play button clicked');
-      } catch (e) {
-        console.log('Click failed, using Space fallback');
-        await page.keyboard.press('Space');
-      }
-    } else {
-      console.log('Play button not found, using Space fallback');
-      await page.keyboard.press('Space');
-    }
-  }else{
-    await page.goto(url, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(8000);
-
-    await page.bringToFront();
-
-    //
-    // === UNIVERSAL HUMAN GESTURE (IMPORTANT FOR SAFARI + FIREFOX) ===
-    //
-    await page.mouse.move(200, 300);
-    await page.waitForTimeout(300);
-    await page.mouse.move(600, 500);
-    await page.waitForTimeout(300);
-    await page.mouse.click(600, 500);
-
-
-    let clicked = false;
-
-    if (await playButton.count() > 0) {
-      //await page.keyboard.press('Space');
-      try {
-
-        await playButton.scrollIntoViewIfNeeded();
-
-        await page.waitForTimeout(500);
-        await page.keyboard.press('Space');
-        
-
-
-      } catch (e) {
-        await playButton.click({ delay: 250 });
-        console.log('Play click failed, fallback keyboard');
-
-      }
-    }
-
-    
+  try {
+    await page.goto(url, {
+      waitUntil: 'domcontentloaded',   // NOT networkidle
+      timeout: 30000
+    });
+  } catch (e) {
+    console.log('Navigation failed:', e.message);
+    playStartTime = Date.now();
+    playDurationSeconds = duration * 60;
+    return;
   }
 
-  console.log('Opening playlist:', url);
-  
+  await page.bringToFront();
+
+  // Scope to the playlist header action bar — not every track row
+  const mainPlayBtn = page.locator(
+    '[data-testid="action-bar-row"] button[data-testid="play-button"]'
+  ).first();
+
+  let btnReady = false;
+  try {
+    await mainPlayBtn.waitFor({ state: 'visible', timeout: 20000 });
+    btnReady = true;
+  } catch {
+    console.log('Main play button never appeared within 20s');
+  }
+
+  if (btnReady) {
+    // Tiny human gesture — needed on Firefox/WebKit, harmless on Chrome
+    if (browserName !== 'chrome') {
+      await page.mouse.move(300, 300);
+      await page.mouse.move(600, 500, { steps: 5 });
+      await page.waitForTimeout(200);
+    }
+
+    // Try real click → programmatic click → keyboard
+    let clicked = false;
+    try {
+      await mainPlayBtn.click({ force: true, timeout: 5000 });
+      clicked = true;
+      console.log('Play clicked');
+    } catch (e) {
+      console.log('Real click failed:', e.message);
+    }
+
+    if (!clicked) {
+      clicked = await page.evaluate(() => {
+        const btn = document.querySelector(
+          '[data-testid="action-bar-row"] button[data-testid="play-button"]'
+        );
+        if (btn) { btn.click(); return true; }
+        return false;
+      });
+      if (clicked) console.log('Programmatic click succeeded');
+    }
+  }
+
+  // Confirm audio actually started
+  const playing = await waitForPlaybackStart(page, 12000);
+  if (playing) {
+    console.log('✓ Playback confirmed');
+  } else {
+    console.log('⚠ Could not confirm playback — page may need login, be region-locked, or hit DRM. Moving on after duration.');
+  }
 
   playStartTime = Date.now();
   playDurationSeconds = duration * 60;
@@ -518,21 +536,23 @@ const delay = (ms) => new Promise(r => setTimeout(r, ms));
 async function runLoop() {
   while (true) {
     try {
+      // Has the current playlist's time run out?
       if (currentPage && playStartTime && playDurationSeconds) {
         const elapsed = (Date.now() - playStartTime) / 1000;
         if (elapsed >= playDurationSeconds) {
-          console.log('Duration reached, moving to next playlist...');
+          console.log('Duration reached, moving on...');
           await stopPlayback();
-          playStartTime = null;
         }
       }
 
-      const task = await fetchTask();
-      if (task && task.id !== currentTaskId) {
-        await stopPlayback();
-        currentTaskId = task.id;
-        console.log('Current browser:'+ userBrowser);
-        await playSpotify(task.spotify_url, currentDuration, userBrowser);
+      // No tab open → start the next playlist
+      if (!currentPage) {
+        const task = await fetchTask();
+        if (task) {
+          currentTaskId = task.id;
+          console.log('Current browser:', userBrowser);
+          await playSpotify(task.spotify_url, currentDuration, userBrowser);
+        }
       }
     } catch (err) {
       console.log('Loop error:', err.message);
