@@ -20,6 +20,7 @@ let playDurationSeconds = null;
 let currentIndex = 0;
 let playlists = [];
 let userBrowser = 'chrome';
+let isPaused = false;
 
 // ============================================================
 // BROWSER LAUNCHERS — all use persistent contexts so logins survive
@@ -535,7 +536,7 @@ async function runLoop() {
 
   // Wait for initial config message
   await new Promise((resolve) => {
-    process.parentPort.on('message', (msg) => {
+    process.parentPort.on('message', async (msg) => {
       msg = msg.data;
 
       if (msg.type === 'config' && !configReceived) {
@@ -558,6 +559,73 @@ async function runLoop() {
 
         
         startPlayback = true;
+      }
+
+      if (msg.type === 'pause-playback') {
+
+        isPaused = true;
+
+        console.log('Pause playback requested');
+
+        if (!currentPage) {
+          console.log('No active page');
+          return;
+        }
+
+        try {
+
+          //
+          // MAIN SPOTIFY PLAYER PAUSE BUTTON
+          //
+          const pauseButton = currentPage.locator(
+            '[data-testid="control-button-pause"]'
+          ).first();
+
+          //
+          // WAIT SMALL DELAY
+          //
+          await currentPage.waitForTimeout(500);
+
+          //
+          // IF CURRENTLY PLAYING
+          //
+          if (await pauseButton.count() > 0) {
+
+            await pauseButton.click({
+              force: true,
+              timeout: 5000
+            });
+
+            console.log('Spotify playback paused');
+
+          } else {
+
+            //
+            // FALLBACK → SPACE KEY
+            //
+            console.log('Pause button not found, using keyboard fallback');
+
+            await currentPage.keyboard.press('Space');
+          }
+
+        } catch (e) {
+
+          console.log('Pause failed:', e.message);
+
+          //
+          // LAST RESORT
+          //
+          try {
+
+            await currentPage.keyboard.press('Space');
+
+            console.log('Space fallback pause triggered');
+
+          } catch (err) {
+
+            console.log('Final pause fallback failed:', err.message);
+          }
+        }
       }
     });
   });

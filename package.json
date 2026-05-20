@@ -1,5 +1,5 @@
 {
-  "name": "spotify-agent",
+  "name": "myspotify-agent",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
@@ -15,7 +15,7 @@
   },
   "build": {
     "appId": "com.spotify.ai",
-    "productName": "Spotify Agent",
+    "productName": "Myspotify Agent",
     "afterPack": "scripts/after-pack.js",
 
     "asarUnpack": [

@@ -9,13 +9,17 @@
 
     :root {
       --green: #1DB954;
-      --bg: #0a0a0a;
-      --surface: #111;
-      --surface-2: #161616;
-      --border: #1e1e1e;
-      --text: #f0f0f0;
-      --muted: #666;
-      --red: #e8444d;
+
+      --bg: #FAF9F6;
+      --surface: #F4F1EA;
+      --surface-2: #FFFFFF;
+
+      --border: #E6E0D6;
+
+      --text: #1F1F1F;
+      --muted: #6F6A63;
+
+      --red: #D94C57;
     }
 
     body {
@@ -23,11 +27,7 @@
       color: var(--text);
       font-family: 'DM Mono', monospace;
       width: 600px;
-<<<<<<< HEAD
       height: 520px;
-=======
-      height: 450px;
->>>>>>> fc909851f407cf176aed313e79ca5d429ba012fe
       overflow: hidden;
       user-select: none;
       -webkit-app-region: drag;
@@ -130,13 +130,13 @@
 
     .input_group { margin-bottom: 10px; }
     .input_group label {
-      font-size: 12px; color: #fff; opacity: 0.8;
+      font-size: 12px; color: var(--muted); opacity: 0.8;
       letter-spacing: .1em; text-transform: uppercase;
     }
     .input_group input {
       width: 100%; height: 38px;
       background: var(--surface); border: 1px solid var(--border);
-      color: #fff; padding: 0 12px; border-radius: 6px; outline: none;
+      color: var(--text); padding: 0 12px; border-radius: 6px; outline: none;
       margin-top: 4px;
       font-family: 'DM Mono', monospace; font-size: 12px;
     }
@@ -152,7 +152,11 @@
       transition: all .2s ease;
       display: flex; align-items: center; justify-content: center; gap: 7px;
     }
-    .btn:hover { color: var(--text); border-color: #333; background: #181818; }
+    .btn:hover {
+      color: var(--text);
+      border-color: #CFC7BB;
+      background: #ECE7DE;
+    }
     .btn:active { transform: scale(.97); }
     .btn:disabled { opacity: .35; cursor: not-allowed; transform: none; }
 
@@ -164,83 +168,27 @@
     }
     .btn-danger { border-color: rgba(232,68,77,.2); color: var(--red); }
     .btn-danger:hover { background: rgba(232,68,77,.08); border-color: rgba(232,68,77,.4); }
-    .btn-reset { border-color: rgba(255,255,255,.12); color: #aaa; }
-    .btn-reset:hover { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.3); color: #fff; }
-
+    .btn-reset {
+      border-color: #DDD6CA;
+      color: #8B847A;
+    }
+    .btn-reset:hover {
+      background: #ECE7DE;
+      border-color: #CFC7BB;
+      color: var(--text);
+    }
     .error {
       font-size: 10px; color: var(--red);
       margin-top: 8px; min-height: 14px;
       letter-spacing: .05em;
     }
 
-<<<<<<< HEAD
     .hint {
-      font-size: 13px; color: #ff; opacity: 0.8;
+      font-size: 13px; color: var(--muted); opacity: 0.8;
       margin-bottom: 20px; text-align: center;
       letter-spacing: .05em; line-height: 1.5;
     }
     .hint b { color: var(--green); font-weight: 500; }
-=======
-    .btn-reset {
-      border-color: rgba(255, 255, 255, 0.15);
-      color: #aaa;
-      opacity: 0.8;
-    }
-
-    .btn-reset:hover {
-      background: rgba(255,255,255,0.06);
-      border-color: rgba(255,255,255,0.3);
-      color: #fff;
-    }
-
-    .modal {
-    position: fixed;
-    inset: 0;
-    left: 0;
-    top: 0;
-    background: rgba(0,0,0,0.6);
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    z-index: 9999;
-  }
-
-  .hidden {
-    display: none;
-  }
-
-  .modal-box {
-    background: #fff;
-    padding: 25px;
-    width: 350px;
-    border-radius: 12px;
-    text-align: center;
-  }
-
-  .modal-box h2 {
-    margin-bottom: 15px;
-    color: #333;
-    font-size: 20px;
-  }
-
-  .modal-box p {
-    margin-bottom: 20px;
-    line-height: 1.5;
-    color: #333;
-  }
-
-  .modal-box button {
-    padding: 10px 20px;
-    border: none;
-    background: #1db954;
-    color: white;
-    border-radius: 6px;
-    cursor: pointer;
-  }
-
->>>>>>> fc909851f407cf176aed313e79ca5d429ba012fe
   </style>
 </head>
 <body>
@@ -256,7 +204,7 @@
                   stroke="white" stroke-width="1" stroke-linecap="round"/>
           </svg>
         </div>
-        <span class="logo-text">Spotify <span>Agent</span></span>
+        <span class="logo-text">Myspotify <span>Agent</span></span>
       </div>
 
       <div class="status-pill" id="statusPill">
@@ -289,11 +237,11 @@
     <!-- ============================================ -->
     <div id="viewLogin" class="view hidden">
       <div class="input_group">
-        <label>Email Address</label>
+        <label>Myspotify Email Address</label>
         <input id="loginEmail" type="email" placeholder="you@example.com" autocomplete="off">
       </div>
       <div class="input_group">
-        <label>Password</label>
+        <label>Myspotify Password</label>
         <input id="loginPassword" type="password" placeholder="••••••••" autocomplete="off">
       </div>
       <div class="error" id="loginError"></div>
@@ -314,6 +262,7 @@
       <div class="controls">
         <button class="btn btn-primary" id="btnStart" onclick="start()">Start</button>
         <button class="btn btn-danger"  id="btnStop"  onclick="stop()" disabled>Stop</button>
+         <!-- <button class="btn btn-danger"  id="btnStop"  onclick="pause()" disabled>Pause</button> -->
         <button class="btn btn-reset"   onclick="resetApp()">Reset</button>
       </div>
     </div>
@@ -426,6 +375,13 @@
       ipcRenderer.send('stop');
       setStatus('idle', 'STOPPED');
       setNowPlaying(null);
+      btnStart.disabled = false;
+      btnStop.disabled  = true;
+    }
+
+    function pause() {
+      ipcRenderer.send('pause');
+      setStatus('paused', 'PAUSED');
       btnStart.disabled = false;
       btnStop.disabled  = true;
     }

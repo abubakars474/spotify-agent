@@ -180,12 +180,22 @@ ipcMain.on('start', (_e, data) => {
 });
 
 ipcMain.on('stop',  () => stopSystem());
+ipcMain.on('pause', () => {
+  if (workerProcess) {
+    workerProcess.postMessage({
+      type: 'pause-playback'
+    });
+  }
+});
+
 
 ipcMain.on('reset', () => {
   stopSystem();
   authToken = userEmail = userPassword = null;
   userDuration = 30;
 });
+
+
 
 app.whenReady().then(createWindow);
 app.on('window-all-closed', () => { stopSystem(); app.quit(); });
