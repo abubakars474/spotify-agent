@@ -15,6 +15,8 @@ let authToken    = null;
 let userEmail    = null;
 let userPassword = null;
 
+let isResetting = false;
+
 const API_BASE = 'https://myspotify.anvs.xyz/api/v1/';
 
 // ============================================================
@@ -58,10 +60,35 @@ function launchChromeWithCDP() {
 }
 
 function stopChrome() {
-  if (chromeProcess) {
-    try { chromeProcess.kill(); } catch {}
-    chromeProcess = null;
+  const userDataDir = os.platform() === 'win32'
+    ? 'C:\\temp\\spotify-agent-profile'
+    : '/tmp/spotify-electron-profile';
+
+  try {
+    if (process.platform === 'win32') {
+      // Windows: PowerShell to find Chrome processes by command line and kill them
+      const escaped = userDataDir.replace(/\\/g, '\\\\');
+      require('child_process').execSync(
+        `powershell -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${escaped}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"`,
+        { stdio: 'ignore' }
+      );
+    } else {
+      // macOS / Linux: pkill matches command-line substring with -f
+      require('child_process').execSync(
+        `pkill -9 -f "user-data-dir=${userDataDir}"`,
+        { stdio: 'ignore' }
+      );
+    }
+    console.log('Chrome processes terminated by command-line match');
+  } catch (e) {
+    // Exit code 1 from pkill = "no processes matched" — that's fine,
+    // it just means Chrome wasn't running. Anything else is a real error.
+    if (e.status !== 1) {
+      console.log('Chrome kill returned:', e.status, e.message);
+    }
   }
+
+  chromeProcess = null;
 }
 
 // ============================================================
@@ -72,6 +99,7 @@ function createWindow() {
     width: 600,
     height: 520,
     resizable: false,
+    icon: path.join(__dirname, 'build', 'icon.png'),
     webPreferences: { nodeIntegration: true, contextIsolation: false }
   });
   win.loadFile('ui/index.html');
@@ -131,7 +159,6 @@ function startWorker() {
     mode:     'start-now'
   });
 
-  // Forward worker messages → renderer
   workerProcess.on('message', (msg) => {
     if (!win || win.isDestroyed()) return;
     if (msg?.type === 'playlist-update') {
@@ -144,7 +171,9 @@ function startWorker() {
   workerProcess.on('exit', (code) => {
     console.log('Worker exited:', code);
     workerProcess = null;
-    if (win && !win.isDestroyed()) {
+    // Don't notify the renderer if this exit was caused by Reset —
+    // otherwise we'd race the renderer's view change.
+    if (!isResetting && win && !win.isDestroyed()) {
       win.webContents.send('playback-state', { state: 'finished-all' });
     }
   });
@@ -180,19 +209,28 @@ ipcMain.on('start', (_e, data) => {
 });
 
 ipcMain.on('stop',  () => stopSystem());
+
 ipcMain.on('pause', () => {
-  if (workerProcess) {
-    workerProcess.postMessage({
-      type: 'pause-playback'
-    });
-  }
+  if (workerProcess) workerProcess.postMessage({ type: 'pause-playback' });
+});
+
+ipcMain.on('resume', () => {
+  if (workerProcess) workerProcess.postMessage({ type: 'resume-playback' });
 });
 
 
 ipcMain.on('reset', () => {
-  stopSystem();
-  authToken = userEmail = userPassword = null;
+  console.log('Reset requested');
+  isResetting = true;
+
+  stopSystem();             // kills worker + Chrome process group
+  authToken = null;
+  userEmail = null;
+  userPassword = null;
   userDuration = 30;
+
+  // Re-arm after the worker's exit event has had time to flow through
+  setTimeout(() => { isResetting = false; }, 2000);
 });
 
 

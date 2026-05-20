@@ -27,6 +27,7 @@
 
     "mac": {
       "category": "public.app-category.music",
+      "icon": "build/icon.png",
       "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }],
       "identity": null,
       "hardenedRuntime": true,
@@ -37,7 +38,8 @@
     },
 
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "build/icon.png"
     },
 
     "nsis": {

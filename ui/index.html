@@ -9,17 +9,17 @@
 
     :root {
       --green: #1DB954;
-
-      --bg: #FAF9F6;
-      --surface: #F4F1EA;
-      --surface-2: #FFFFFF;
-
-      --border: #E6E0D6;
-
-      --text: #1F1F1F;
-      --muted: #6F6A63;
-
-      --red: #D94C57;
+      --green-dim: #15a046;
+      --bg: #f5f5f3;
+      --surface: #ffffff;
+      --surface-2: #fafafa;
+      --border: #e4e4e0;
+      --border-strong: #cfcfca;
+      --text: #1a1a1a;
+      --text-soft: #444;
+      --muted: #000000;
+      --red: #d63a3a;
+      --shadow: 0 1px 2px rgba(0,0,0,0.04), 0 0 0 1px rgba(0,0,0,0.03);
     }
 
     body {
@@ -38,70 +38,78 @@
       position: fixed;
       inset: 0;
       background-image:
-        linear-gradient(var(--border) 1px, transparent 1px),
-        linear-gradient(90deg, var(--border) 1px, transparent 1px);
+        linear-gradient(rgba(0,0,0,.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,0,0,.04) 1px, transparent 1px);
       background-size: 28px 28px;
-      opacity: 0.35;
       pointer-events: none;
     }
 
     body::after {
       content: '';
       position: fixed;
-      width: 220px; height: 220px;
+      width: 260px; height: 260px;
       border-radius: 50%;
-      background: radial-gradient(circle, rgba(29,185,84,.08) 0%, transparent 70%);
-      top: -60px; right: -40px;
+      background: radial-gradient(circle, rgba(29,185,84,.12) 0%, transparent 70%);
+      top: -80px; right: -50px;
       pointer-events: none;
       transition: background .6s ease;
     }
-    body.running::after { background: radial-gradient(circle, rgba(29,185,84,.18) 0%, transparent 70%); }
+    body.running::after { background: radial-gradient(circle, rgba(29,185,84,.22) 0%, transparent 70%); }
 
     .container {
       position: relative; height: 100%;
       display: flex; flex-direction: column;
-      padding: 16px 20px;
+      padding: 18px 22px;
     }
 
     .top { display: flex; align-items: center; justify-content: space-between; }
-    .logo { display: flex; align-items: center; gap: 8px; }
+
+    .logo { display: flex; align-items: center; gap: 9px; }
     .logo-icon {
-      width: 22px; height: 22px; background: var(--green);
+      width: 24px; height: 24px; background: var(--green);
       border-radius: 50%; display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 2px 6px rgba(29,185,84,.25);
     }
-    .logo-icon svg { width: 12px; height: 12px; }
+    .logo-icon svg { width: 13px; height: 13px; }
     .logo-text {
       font-family: 'Syne', sans-serif; font-weight: 800; font-size: 13px;
-      letter-spacing: .08em; text-transform: uppercase;
+      letter-spacing: .08em; text-transform: uppercase; color: var(--text);
     }
     .logo-text span { color: var(--green); }
 
     .status-pill {
       display: flex; align-items: center; gap: 6px;
       background: var(--surface); border: 1px solid var(--border);
-      border-radius: 20px; padding: 4px 10px;
-      font-size: 10px; letter-spacing: .06em; color: var(--muted);
+      border-radius: 20px; padding: 5px 11px;
+      font-size: 10px; letter-spacing: .08em; color: var(--muted);
+      box-shadow: var(--shadow);
       transition: all .4s ease;
     }
-    .status-pill.active { border-color: rgba(29,185,84,.3); color: var(--green); }
+    .status-pill.active { border-color: rgba(29,185,84,.4); color: var(--green-dim); }
     .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); transition: .4s; }
     .status-pill.active .dot {
-      background: var(--green); box-shadow: 0 0 6px var(--green);
+      background: var(--green);
+      box-shadow: 0 0 6px rgba(29,185,84,.6);
       animation: pulse 2s ease-in-out infinite;
     }
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
 
     .visualizer {
       display: flex; align-items: center; justify-content: center; gap: 3px;
-      height: 42px; margin-top: 28px;
+      height: 44px; margin-top: 26px;
     }
     .bar {
-      width: 3px; background: var(--border); border-radius: 2px; height: 6px;
+      width: 3px; background: var(--border-strong); border-radius: 2px; height: 6px;
       transition: background .4s ease;
     }
     .running .bar {
       background: var(--green);
       animation: wave var(--dur) ease-in-out infinite alternate;
+    }
+    .paused .bar {
+      background: var(--green);
+      opacity: .4;
+      animation: none;
     }
     @keyframes wave {
       from { height: 4px; opacity: .5; }
@@ -109,86 +117,104 @@
     }
 
     .now-playing {
-      text-align: center; min-height: 40px;
+      text-align: center; min-height: 42px;
       display: flex; flex-direction: column; align-items: center; justify-content: center;
       margin-top: 6px;
     }
     .np-label {
-      font-size: 9px; color: var(--muted);
-      letter-spacing: .15em; text-transform: uppercase;
+      font-size: 12px; color: var(--muted);
+      letter-spacing: .18em; text-transform: uppercase;
     }
     .np-title {
       font-size: 13px; color: var(--text); margin-top: 4px;
       max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      font-weight: 500;
     }
-    .np-title.active { color: var(--green); }
+    .np-title.active { color: var(--green-dim); }
 
-    .divider { width: 100%; height: 1px; background: var(--border); margin: 16px 0; }
+    .divider { width: 100%; height: 1px; background: var(--border); margin: 18px 0; }
 
     .view { -webkit-app-region: no-drag; }
     .view.hidden { display: none; }
 
-    .input_group { margin-bottom: 10px; }
+    .input_group { margin-bottom: 12px; }
     .input_group label {
-      font-size: 12px; color: var(--muted); opacity: 0.8;
-      letter-spacing: .1em; text-transform: uppercase;
+      font-size: 12px; color: var(--muted);
+      letter-spacing: .12em; text-transform: uppercase;
     }
     .input_group input {
-      width: 100%; height: 38px;
+      width: 100%; height: 40px;
       background: var(--surface); border: 1px solid var(--border);
-      color: var(--text); padding: 0 12px; border-radius: 6px; outline: none;
-      margin-top: 4px;
+      color: var(--text); padding: 0 13px; border-radius: 8px; outline: none;
+      margin-top: 5px;
       font-family: 'DM Mono', monospace; font-size: 12px;
+      box-shadow: var(--shadow);
+      transition: border-color .2s, box-shadow .2s;
     }
-    .input_group input:focus { border-color: rgba(29,185,84,.4); }
+    .input_group input::placeholder { color: var(--muted); opacity: 0.6; }
+    .input_group input:focus {
+      border-color: var(--green);
+      box-shadow: 0 0 0 3px rgba(29,185,84,.12);
+    }
 
-    .controls { display: flex; gap: 10px; -webkit-app-region: no-drag; margin-top: 20px; }
+    .controls { display: flex; gap: 10px; -webkit-app-region: no-drag; }
+
     .btn {
-      flex: 1; height: 38px;
-      border: 1px solid var(--border); border-radius: 6px;
-      background: var(--surface); color: var(--muted);
-      font-family: 'DM Mono', monospace; font-size: 11px; font-weight: 500;
+      flex: 1; height: 40px;
+      border: 1px solid var(--border); border-radius: 8px;
+      background: var(--surface); color: var(--text-soft);
+      font-family: 'DM Mono', monospace; font-size: 12px; font-weight: 500;
       letter-spacing: .1em; text-transform: uppercase; cursor: pointer;
       transition: all .2s ease;
       display: flex; align-items: center; justify-content: center; gap: 7px;
+      box-shadow: var(--shadow);
     }
     .btn:hover {
-      color: var(--text);
-      border-color: #CFC7BB;
-      background: #ECE7DE;
+      color: var(--text); border-color: var(--border-strong);
+      background: var(--surface-2);
     }
     .btn:active { transform: scale(.97); }
-    .btn:disabled { opacity: .35; cursor: not-allowed; transform: none; }
+    .btn:disabled {
+      opacity: .4; cursor: not-allowed; transform: none;
+      background: var(--surface);
+    }
 
-    .btn-primary { border-color: rgba(29,185,84,.25); color: var(--green); }
+    .btn-primary { border-color: rgba(29,185,84,.4); color: var(--green-dim); background: var(--surface); }
     .btn-primary:hover {
-      background: rgba(29,185,84,.08);
-      border-color: rgba(29,185,84,.5);
-      box-shadow: 0 0 16px rgba(29,185,84,.1);
+      background: rgba(29,185,84,.06);
+      border-color: var(--green);
+      color: var(--green-dim);
+      box-shadow: 0 2px 8px rgba(29,185,84,.15);
     }
-    .btn-danger { border-color: rgba(232,68,77,.2); color: var(--red); }
-    .btn-danger:hover { background: rgba(232,68,77,.08); border-color: rgba(232,68,77,.4); }
-    .btn-reset {
-      border-color: #DDD6CA;
-      color: #8B847A;
+
+    .btn-pause { border-color: rgba(80, 80, 80, 0.25); color: var(--text-soft); }
+    .btn-pause:hover {
+      background: rgba(0,0,0,.03); border-color: var(--text-soft); color: var(--text);
     }
+
+    .btn-danger { border-color: rgba(214,58,58,.35); color: var(--red); }
+    .btn-danger:hover {
+      background: rgba(214,58,58,.06);
+      border-color: var(--red);
+    }
+
+    .btn-reset { border-color: var(--border); color: var(--muted); }
     .btn-reset:hover {
-      background: #ECE7DE;
-      border-color: #CFC7BB;
-      color: var(--text);
+      background: rgba(0,0,0,.02); border-color: var(--border-strong); color: var(--text-soft);
     }
+
     .error {
-      font-size: 10px; color: var(--red);
+      font-size: 12px; color: var(--red);
       margin-top: 8px; min-height: 14px;
-      letter-spacing: .05em;
+      letter-spacing: .04em;
     }
 
     .hint {
-      font-size: 13px; color: var(--muted); opacity: 0.8;
-      margin-bottom: 20px; text-align: center;
-      letter-spacing: .05em; line-height: 1.5;
+      font-size: 12px; color: var(--muted);
+      margin-bottom: 12px; text-align: center;
+      letter-spacing: .04em; line-height: 1.6;
     }
-    .hint b { color: var(--green); font-weight: 500; }
+    .hint b { color: var(--green-dim); font-weight: 600; }
   </style>
 </head>
 <body>
@@ -198,11 +224,7 @@
     <div class="top">
       <div class="logo">
         <div class="logo-icon">
-          <svg viewBox="0 0 12 12" fill="none">
-            <circle cx="6" cy="6" r="5" stroke="white" stroke-width="1.2"/>
-            <path d="M3 4.5C4.5 4 7.5 4 9 4.8M3 6C4.3 5.6 7 5.6 9 6.2M3.5 7.5C4.8 7.2 7.2 7.2 8.5 7.7"
-                  stroke="white" stroke-width="1" stroke-linecap="round"/>
-          </svg>
+          <img src="images/logo.svg" style="width: 40px; height: auto; margin-right: 8px;" />
         </div>
         <span class="logo-text">Myspotify <span>Agent</span></span>
       </div>
@@ -222,9 +244,7 @@
 
     <div class="divider"></div>
 
-    <!-- ============================================ -->
-    <!-- VIEW 1: Initial — Open Browser -->
-    <!-- ============================================ -->
+    <!-- VIEW 1: Open Browser -->
     <div id="viewInitial" class="view">
       <div class="hint">Click <b>Open Browser</b>, sign into Spotify in the window that opens, then come back here to log in.</div>
       <div class="controls">
@@ -232,9 +252,7 @@
       </div>
     </div>
 
-    <!-- ============================================ -->
     <!-- VIEW 2: Login Form -->
-    <!-- ============================================ -->
     <div id="viewLogin" class="view hidden">
       <div class="input_group">
         <label>Myspotify Email Address</label>
@@ -251,19 +269,35 @@
       </div>
     </div>
 
-    <!-- ============================================ -->
-    <!-- VIEW 3: Playback Controls -->
-    <!-- ============================================ -->
-    <div id="viewControls" class="view hidden">
+    <!-- VIEW 3a: Configure (duration + Start) -->
+    <div id="viewConfigure" class="view hidden">
       <div class="input_group">
         <label>Playlist duration (minutes)</label>
         <input id="duration" type="number" min="1" value="30">
       </div>
       <div class="controls">
         <button class="btn btn-primary" id="btnStart" onclick="start()">Start</button>
-        <button class="btn btn-danger"  id="btnStop"  onclick="stop()" disabled>Stop</button>
-         <!-- <button class="btn btn-danger"  id="btnStop"  onclick="pause()" disabled>Pause</button> -->
-        <button class="btn btn-reset"   onclick="resetApp()">Reset</button>
+        <button class="btn btn-reset" onclick="resetApp()">Reset</button>
+      </div>
+    </div>
+
+    <!-- VIEW 3b: Running (Play / Pause / Reset) -->
+    <div id="viewRunning" class="view hidden">
+      <div class="controls">
+        <button class="btn btn-primary" id="btnPlay" onclick="playAction()" disabled>
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
+            <polygon points="2,1 9,5 2,9"/>
+          </svg>
+          Play
+        </button>
+        <button class="btn btn-pause" id="btnPause" onclick="pauseAction()">
+          <svg width="9" height="9" viewBox="0 0 9 9" fill="currentColor">
+            <rect x="1" y="1" width="2.5" height="7" rx=".5"/>
+            <rect x="5.5" y="1" width="2.5" height="7" rx=".5"/>
+          </svg>
+          Pause
+        </button>
+        <button class="btn btn-reset" onclick="resetApp()">Reset</button>
       </div>
     </div>
 
@@ -277,11 +311,10 @@
     const npTitle    = document.getElementById('npTitle');
     const loginError = document.getElementById('loginError');
     const btnLogin   = document.getElementById('btnLogin');
-    const btnStart   = document.getElementById('btnStart');
-    const btnStop    = document.getElementById('btnStop');
+    const btnPlay    = document.getElementById('btnPlay');
+    const btnPause   = document.getElementById('btnPause');
     const viz        = document.getElementById('visualizer');
 
-    // Waveform bars
     const heights = [6,8,14,20,28,34,38,34,28,22,16,24,30,36,30,22,18,26,34,38,32,24,16,22,30,36,28,20,14,10,8,6];
     for (let i = 0; i < heights.length; i++) {
       const b = document.createElement('div');
@@ -292,20 +325,21 @@
       viz.appendChild(b);
     }
 
-    // ---- View management ----
     function showView(name) {
-      ['viewInitial', 'viewLogin', 'viewControls'].forEach(id =>
+      ['viewInitial', 'viewLogin', 'viewConfigure', 'viewRunning'].forEach(id =>
         document.getElementById(id).classList.toggle('hidden', id !== name));
     }
 
-    function setStatus(state, label) {
+    function setStatus(mode, label) {
       statusText.textContent = label;
-      if (state === 'running') {
+      document.body.classList.remove('running', 'paused');
+      statusPill.classList.remove('active');
+      if (mode === 'running') {
         document.body.classList.add('running');
         statusPill.classList.add('active');
-      } else {
-        document.body.classList.remove('running');
-        statusPill.classList.remove('active');
+      } else if (mode === 'paused') {
+        document.body.classList.add('paused');
+        statusPill.classList.add('active');
       }
     }
 
@@ -319,10 +353,9 @@
       }
     }
 
-    // ---- Actions ----
     function openBrowser() {
       ipcRenderer.send('open-browser', 'chrome');
-      setStatus('idle', 'BROWSER OPEN');
+      setStatus('idle', 'BROWSER OPENED');
       showView('viewLogin');
     }
 
@@ -346,7 +379,7 @@
       try {
         const result = await ipcRenderer.invoke('login', { email, password });
         if (result.success) {
-          showView('viewControls');
+          showView('viewConfigure');
           setStatus('idle', 'READY');
         } else {
           loginError.textContent = result.message || 'Login failed';
@@ -367,23 +400,23 @@
       }
       ipcRenderer.send('start', { duration });
       setStatus('running', 'RUNNING');
-      btnStart.disabled = true;
-      btnStop.disabled  = false;
+      showView('viewRunning');
+      btnPlay.disabled = true;
+      btnPause.disabled = false;
     }
 
-    function stop() {
-      ipcRenderer.send('stop');
-      setStatus('idle', 'STOPPED');
-      setNowPlaying(null);
-      btnStart.disabled = false;
-      btnStop.disabled  = true;
-    }
-
-    function pause() {
+    function pauseAction() {
       ipcRenderer.send('pause');
       setStatus('paused', 'PAUSED');
-      btnStart.disabled = false;
-      btnStop.disabled  = true;
+      btnPlay.disabled = false;
+      btnPause.disabled = true;
+    }
+
+    function playAction() {
+      ipcRenderer.send('resume');
+      setStatus('running', 'RUNNING');
+      btnPlay.disabled = true;
+      btnPause.disabled = false;
     }
 
     function resetApp() {
@@ -392,14 +425,11 @@
       document.getElementById('loginPassword').value = '';
       document.getElementById('duration').value = 30;
       loginError.textContent = '';
-      btnStart.disabled = false;
-      btnStop.disabled  = true;
       setStatus('idle', 'IDLE');
       setNowPlaying(null);
       showView('viewInitial');
     }
 
-    // ---- Live updates from worker ----
     ipcRenderer.on('playlist-update', (e, data) => {
       setNowPlaying(data.title || data.url || 'Untitled playlist');
     });
@@ -408,32 +438,10 @@
       if (data.state === 'finished-all') {
         setStatus('idle', 'DONE');
         setNowPlaying(null);
-        btnStart.disabled = false;
-        btnStop.disabled  = true;
+        showView('viewConfigure');
       }
     });
   </script>
-
-  <div id="loginModal" class="modal hidden">
-
-    <div class="modal-box">
-
-      <h2>Spotify Login Required</h2>
-
-      <p>
-        Please login to your Spotify account
-        in the opened browser window.
-        <br><br>
-        Audio playback will not work without login.
-      </p>
-
-      <button onclick="closeLoginModal()">
-        OK
-      </button>
-
-    </div>
-
-  </div>
 
 </body>
 </html>

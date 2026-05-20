@@ -21,6 +21,8 @@ let currentIndex = 0;
 let playlists = [];
 let userBrowser = 'chrome';
 let isPaused = false;
+let pausedAt = null;
+let pausedAccumulatedMs = 0;
 
 // ============================================================
 // BROWSER LAUNCHERS — all use persistent contexts so logins survive
@@ -480,6 +482,24 @@ async function playSpotify(url, duration = 30, browserName) {
   playDurationSeconds = duration * 60;
 }
 
+async function setSpotifyPlayback(action) {
+  if (!currentPage) return;
+  try {
+    const result = await currentPage.evaluate((wanted) => {
+      const btn = document.querySelector('[data-testid="control-button-playpause"]');
+      if (!btn) return 'no-button';
+      const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+      const isPlaying = label.includes('pause'); // when playing, the button's job is to pause
+      if (wanted === 'pause' && isPlaying) { btn.click(); return 'paused'; }
+      if (wanted === 'play'  && !isPlaying) { btn.click(); return 'playing'; }
+      return 'unchanged';
+    }, action);
+    console.log(`Spotify ${action}:`, result);
+  } catch (e) {
+    console.log('setSpotifyPlayback failed:', e.message);
+  }
+}
+
 async function stopPlayback() {
   if (!currentPage) return;
 
@@ -502,21 +522,24 @@ const delay = (ms) => new Promise(r => setTimeout(r, ms));
 async function runLoop() {
   while (true) {
     try {
-      // Has the current playlist's time run out?
-      if (currentPage && playStartTime && playDurationSeconds) {
-        const elapsed = (Date.now() - playStartTime) / 1000;
-        if (elapsed >= playDurationSeconds) {
+      // Tick duration only when not paused
+      if (currentPage && playStartTime && playDurationSeconds && !isPaused) {
+        const effectiveElapsedMs = Date.now() - playStartTime - pausedAccumulatedMs;
+        if (effectiveElapsedMs / 1000 >= playDurationSeconds) {
           console.log('Duration reached, moving on...');
           await stopPlayback();
         }
       }
 
-      // No tab open → start the next playlist
+      // Reset paused-time tracking on a fresh playlist
       if (!currentPage) {
+        pausedAccumulatedMs = 0;
+        isPaused = false;
+        pausedAt = null;
+
         const task = await fetchTask();
         if (task) {
           currentTaskId = task.id;
-          console.log('Current browser:', userBrowser);
           await playSpotify(task.spotify_url, currentDuration, userBrowser);
         }
       }
@@ -562,71 +585,24 @@ async function runLoop() {
       }
 
       if (msg.type === 'pause-playback') {
-
-        isPaused = true;
-
-        console.log('Pause playback requested');
-
-        if (!currentPage) {
-          console.log('No active page');
-          return;
-        }
-
-        try {
-
-          //
-          // MAIN SPOTIFY PLAYER PAUSE BUTTON
-          //
-          const pauseButton = currentPage.locator(
-            '[data-testid="control-button-pause"]'
-          ).first();
-
-          //
-          // WAIT SMALL DELAY
-          //
-          await currentPage.waitForTimeout(500);
-
-          //
-          // IF CURRENTLY PLAYING
-          //
-          if (await pauseButton.count() > 0) {
-
-            await pauseButton.click({
-              force: true,
-              timeout: 5000
-            });
-
-            console.log('Spotify playback paused');
-
-          } else {
-
-            //
-            // FALLBACK → SPACE KEY
-            //
-            console.log('Pause button not found, using keyboard fallback');
-
-            await currentPage.keyboard.press('Space');
-          }
-
-        } catch (e) {
-
-          console.log('Pause failed:', e.message);
-
-          //
-          // LAST RESORT
-          //
-          try {
-
-            await currentPage.keyboard.press('Space');
-
-            console.log('Space fallback pause triggered');
-
-          } catch (err) {
-
-            console.log('Final pause fallback failed:', err.message);
-          }
+        if (!isPaused) {
+          isPaused = true;
+          pausedAt = Date.now();
+          console.log('Pause requested');
+          setSpotifyPlayback('pause').catch(() => {});
         }
       }
+
+      if (msg.type === 'resume-playback') {
+        if (isPaused && pausedAt) {
+          pausedAccumulatedMs += Date.now() - pausedAt;
+          pausedAt = null;
+          isPaused = false;
+          console.log('Resume requested');
+          setSpotifyPlayback('play').catch(() => {});
+        }
+      }
+      
     });
   });
 
