@@ -235,10 +235,10 @@
       </div>
     </div>
 
-    <div class="visualizer" id="visualizer"></div>
+    <div style="margin-top: 40px;" class="visualizer" id="visualizer"></div>
 
-    <div class="now-playing">
-      <span class="np-label">Now Playing</span>
+    <div class="now-playing" style="margin-top: 20px;">
+      <span class="np-label" style="font-size: 18px;">Now Playing</span>
       <span class="np-title" id="npTitle">— idle —</span>
     </div>
 
@@ -247,7 +247,7 @@
     <!-- VIEW 1: Open Browser -->
     <div id="viewInitial" class="view">
       <div class="hint">Click <b>Open Browser</b>, sign into Spotify in the window that opens, then come back here to log in.</div>
-      <div class="controls">
+      <div class="controls" style="margin-top: 30px;">
         <button class="btn btn-primary" onclick="openBrowser()">Open Browser</button>
       </div>
     </div>
@@ -265,7 +265,7 @@
       <div class="error" id="loginError"></div>
       <div class="controls">
         <button class="btn btn-primary" id="btnLogin" onclick="doLogin()">Login</button>
-        <button class="btn btn-reset" onclick="resetApp()">Reset</button>
+        <button class="btn btn-reset" onclick="resetApp()">Restart</button>
       </div>
     </div>
 
@@ -275,14 +275,14 @@
         <label>Playlist duration (minutes)</label>
         <input id="duration" type="number" min="1" value="30">
       </div>
-      <div class="controls">
+      <div class="controls" style="margin-top: 30px;">
         <button class="btn btn-primary" id="btnStart" onclick="start()">Start</button>
-        <button class="btn btn-reset" onclick="resetApp()">Reset</button>
+        <button class="btn btn-reset" onclick="resetApp()">Restart</button>
       </div>
     </div>
 
     <!-- VIEW 3b: Running (Play / Pause / Reset) -->
-    <div id="viewRunning" class="view hidden">
+    <div id="viewRunning" class="view hidden" style="margin-top:20px;">
       <div class="controls">
         <button class="btn btn-primary" id="btnPlay" onclick="playAction()" disabled>
           <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
@@ -297,7 +297,7 @@
           </svg>
           Pause
         </button>
-        <button class="btn btn-reset" onclick="resetApp()">Reset</button>
+        <button class="btn btn-reset" onclick="resetApp()">Restart</button>
       </div>
     </div>
 
