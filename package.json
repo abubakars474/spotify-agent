@@ -4,9 +4,8 @@
   "main": "index.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder",
-    "build-win": "electron-builder --win",
-    "build-mac": "electron-builder --mac"
+    "playwright-install-bundle": "PLAYWRIGHT_BROWSERS_PATH=./ms-playwright playwright install chromium firefox webkit",
+    "build-mac": "npm run playwright-install-bundle && electron-builder --mac"
   },
   "dependencies": {
     "playwright": "^1.40.0"
@@ -18,21 +17,42 @@
   "build": {
     "appId": "com.spotify.ai",
     "productName": "Spotify Agent",
-    "mac": {
-      "target": "dmg"
-    },
-    "win": {
-      "target": "nsis"
-    },
+    "afterPack": "scripts/after-pack.js",
+
     "asarUnpack": [
       "worker.js",
       "node_modules/playwright/**",
       "node_modules/playwright-core/**",
       "node_modules/@playwright/**"
     ],
+
+    "extraResources": [
+      {
+        "from": "ms-playwright",
+        "to": "ms-playwright",
+        "filter": ["**/*"]
+      }
+    ],
+
+    "mac": {
+      "category": "public.app-category.music",
+      "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }],
+      "identity": null,
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": false
+    },
+
+    "win": {
+      "target": "nsis"
+    },
+
     "nsis": {
       "oneClick": false
     },
+
     "nodeGypRebuild": false,
     "buildDependenciesFromSource": false
   }

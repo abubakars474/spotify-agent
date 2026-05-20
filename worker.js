@@ -1,7 +1,14 @@
-const { chromium, webkit, firefox } = require('playwright');
-const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const fs = require('fs');
+if (process.resourcesPath && !process.env.PLAYWRIGHT_BROWSERS_PATH) {
+  const bundled = path.join(process.resourcesPath, 'ms-playwright');
+  if (fs.existsSync(bundled)) {
+    process.env.PLAYWRIGHT_BROWSERS_PATH = bundled;
+    console.log('Using bundled Playwright browsers at', bundled);
+  }
+}
+const { chromium, webkit, firefox } = require('playwright');
+const os = require('os');
 
 let context;
 let currentPage = null;
@@ -224,38 +231,6 @@ async function startBrowser() {
   }
 
 
-  // if (userBrowser === 'firefox') {
-  //   const firefoxProfile = path.join(os.homedir(), '.spotify-agent-firefox-profile');
-
-  //   clearFirefoxVersionLocks(firefoxProfile);   // <-- before launch
-  //   seedWidevine(firefoxProfile);
-
-  //   context = await firefox.launchPersistentContext(firefoxProfile, {
-  //     headless: false,
-  //     viewport: { width: 1280, height: 800 },
-  //     args: ['-allow-downgrade'],               // <-- silences the dialog if it recurs
-  //     firefoxUserPrefs: {
-  //       'media.eme.enabled': true,
-  //       'media.gmp-widevinecdm.enabled': true,
-  //       'media.gmp-widevinecdm.visible': true,
-  //       'media.gmp-widevinecdm.forceSupported': true,
-  //       'media.autoplay.default': 0,
-  //       'media.autoplay.blocking_policy': 0,
-  //     }
-  //   });
-
-  //   const page = context.pages()[0] || await context.newPage();
-  //   await page.goto('https://open.spotify.com', { waitUntil: 'domcontentloaded' });
-  //   console.log('Firefox launched (persistent profile)');
-  // }
-
-
-
-
-
-
-
-
 
   // CHROME → connect to the Chrome already spawned by main.js
   const browser = await chromium.connectOverCDP('http://localhost:9222');
@@ -323,79 +298,62 @@ function seedWidevine(targetProfile) {
 }
 
 
-const API_BASE     = 'https://myspotify.anvs.xyz/api/v1/';   // <-- fill in
-const API_USERNAME = 'autoplayer@annanovas.com';
-const API_PASSWORD = 'eN?7#2*P=Pi38%^';
-
-let authToken = null;
+// ============================================================
+// API CONFIG (now passed in via 'config' message)
+// ============================================================
+let API_BASE     = 'https://myspotify.anvs.xyz/api/v1/';
+let API_USERNAME = null;
+let API_PASSWORD = null;
+let authToken    = null;
 let playlistsLoaded = false;
 
-// ============================================================
-// API HELPERS (Node 18+ has global fetch / FormData)
-// ============================================================
+function emit(type, payload) {
+  try { process.parentPort.postMessage({ type, payload }); } catch {}
+}
+
 async function apiLogin() {
+  if (!API_USERNAME || !API_PASSWORD) {
+    throw new Error('No credentials available for re-login');
+  }
   const form = new FormData();
   form.append('username', API_USERNAME);
   form.append('password', API_PASSWORD);
 
   const res = await fetch(`${API_BASE}login`, { method: 'POST', body: form });
   const json = await res.json();
-
   if (json?.data?.token) {
     authToken = json.data.token;
-    console.log('API login OK');
+    console.log('Worker re-login OK');
     return authToken;
   }
-  throw new Error('Login failed: ' + JSON.stringify(json));
+  throw new Error('Worker re-login failed: ' + JSON.stringify(json));
 }
 
 async function apiFetchPlaylists() {
   if (!authToken) await apiLogin();
-
   const res = await fetch(`${API_BASE}playlists`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${authToken}` }
   });
-
-  // Token expired → re-login once and retry
-  if (res.status === 401) {
-    authToken = null;
-    await apiLogin();
-    return apiFetchPlaylists();
-  }
-
+  if (res.status === 401) { authToken = null; await apiLogin(); return apiFetchPlaylists(); }
   const json = await res.json();
-  //console.log(json.data?.play_lists);
-  // Expected shape: { data: [{ id, url }, ...] }
-  return json?.data ? json.data?.play_lists : [];
+  return json?.data?.play_lists || [];
 }
 
 async function apiNotifyPlayed(playlist) {
   if (!playlist) return;
   if (!authToken) await apiLogin();
-
   const form = new FormData();
-  if (playlist.id)  form.append('play_list_id', String(playlist.id));
-
+  if (playlist.id) form.append('play_list_id', String(playlist.id));
   try {
     const res = await fetch(`${API_BASE}playlists/play`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${authToken}` },
       body: form
     });
-
-    //console.log(res);
-
-    if (res.status === 401) {
-      authToken = null;
-      await apiLogin();
-      return apiNotifyPlayed(playlist);
-    }
-
+    if (res.status === 401) { authToken = null; await apiLogin(); return apiNotifyPlayed(playlist); }
     console.log('Notified server: playlist', playlist.id, 'played');
-  } catch (e) {
-    console.log('Notify failed:', e.message);
-  }
+  } catch (e) { console.log('Notify failed:', e.message); }
 }
 
 // ============================================================
@@ -444,6 +402,13 @@ async function playSpotify(url, duration = 30, browserName) {
   const page = await context.newPage();
   currentPage = page;
   console.log('Opening playlist:', url);
+
+  const currentPlaylist = playlists[currentIndex];
+  emit('playlist-update', {
+    id:    currentPlaylist?.id,
+    title: currentPlaylist?.title || currentPlaylist?.name || 'Untitled playlist',
+    url:   url
+  });
 
   try {
     await page.goto(url, {
@@ -576,13 +541,13 @@ async function runLoop() {
       if (msg.type === 'config' && !configReceived) {
         configReceived = true;
         currentDuration = Number(msg.duration || 30);
-        userEmail       = msg.email;
-        userBrowser     = msg.browser || 'chrome';
-        console.log('Config received — browser:', userBrowser, 'mode:', msg.mode);
-
-        if (msg.mode === 'start-now') {
-          startPlayback = true;
-        }
+        userBrowser     = msg.browser  || 'chrome';
+        API_BASE        = msg.apiBase  || API_BASE;
+        authToken       = msg.token    || null;
+        API_USERNAME    = msg.email    || null;
+        API_PASSWORD    = msg.password || null;
+        console.log('Config received — browser:', userBrowser, 'mode:', msg.mode, 'token:', !!authToken);
+        if (msg.mode === 'start-now') startPlayback = true;
         resolve();
       }
 
