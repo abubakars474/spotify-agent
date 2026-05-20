@@ -4,8 +4,7 @@
   "main": "index.js",
   "scripts": {
     "start": "electron .",
-    "playwright-install-bundle": "PLAYWRIGHT_BROWSERS_PATH=./ms-playwright playwright install chromium firefox webkit",
-    "build-mac": "npm run playwright-install-bundle && electron-builder --mac"
+    "build-mac": "electron-builder --mac"
   },
   "dependencies": {
     "playwright": "^1.40.0"
@@ -24,14 +23,6 @@
       "node_modules/playwright/**",
       "node_modules/playwright-core/**",
       "node_modules/@playwright/**"
-    ],
-
-    "extraResources": [
-      {
-        "from": "ms-playwright",
-        "to": "ms-playwright",
-        "filter": ["**/*"]
-      }
     ],
 
     "mac": {
