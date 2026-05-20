@@ -23,7 +23,11 @@
       color: var(--text);
       font-family: 'DM Mono', monospace;
       width: 600px;
+<<<<<<< HEAD
       height: 520px;
+=======
+      height: 450px;
+>>>>>>> fc909851f407cf176aed313e79ca5d429ba012fe
       overflow: hidden;
       user-select: none;
       -webkit-app-region: drag;
@@ -169,12 +173,74 @@
       letter-spacing: .05em;
     }
 
+<<<<<<< HEAD
     .hint {
       font-size: 13px; color: #ff; opacity: 0.8;
       margin-bottom: 20px; text-align: center;
       letter-spacing: .05em; line-height: 1.5;
     }
     .hint b { color: var(--green); font-weight: 500; }
+=======
+    .btn-reset {
+      border-color: rgba(255, 255, 255, 0.15);
+      color: #aaa;
+      opacity: 0.8;
+    }
+
+    .btn-reset:hover {
+      background: rgba(255,255,255,0.06);
+      border-color: rgba(255,255,255,0.3);
+      color: #fff;
+    }
+
+    .modal {
+    position: fixed;
+    inset: 0;
+    left: 0;
+    top: 0;
+    background: rgba(0,0,0,0.6);
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    z-index: 9999;
+  }
+
+  .hidden {
+    display: none;
+  }
+
+  .modal-box {
+    background: #fff;
+    padding: 25px;
+    width: 350px;
+    border-radius: 12px;
+    text-align: center;
+  }
+
+  .modal-box h2 {
+    margin-bottom: 15px;
+    color: #333;
+    font-size: 20px;
+  }
+
+  .modal-box p {
+    margin-bottom: 20px;
+    line-height: 1.5;
+    color: #333;
+  }
+
+  .modal-box button {
+    padding: 10px 20px;
+    border: none;
+    background: #1db954;
+    color: white;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+>>>>>>> fc909851f407cf176aed313e79ca5d429ba012fe
   </style>
 </head>
 <body>
@@ -391,6 +457,27 @@
       }
     });
   </script>
+
+  <div id="loginModal" class="modal hidden">
+
+    <div class="modal-box">
+
+      <h2>Spotify Login Required</h2>
+
+      <p>
+        Please login to your Spotify account
+        in the opened browser window.
+        <br><br>
+        Audio playback will not work without login.
+      </p>
+
+      <button onclick="closeLoginModal()">
+        OK
+      </button>
+
+    </div>
+
+  </div>
 
 </body>
 </html>
