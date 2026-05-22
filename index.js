@@ -17,6 +17,7 @@ let userPassword = null;
 
 let isResetting = false;
 
+
 const API_BASE = 'https://myspotify.anvs.xyz/api/v1/';
 
 // ============================================================
@@ -131,6 +132,35 @@ ipcMain.handle('login', async (_e, { email, password }) => {
   } catch (err) {
     return { success: false, message: err.message };
   }
+});
+
+ipcMain.handle('reset-playlists', async () => {
+  if (!authToken) {
+    throw new Error('Not logged in');
+  }
+
+  // Call the reset endpoint on the server
+  try {
+    const res = await fetch(`${API_BASE}playlists/reset`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${authToken}` }
+    });
+    if (!res.ok) {
+      console.log('Reset API returned', res.status);
+    } else {
+      console.log('Playlists reset on server');
+    }
+  } catch (e) {
+    console.log('Reset API failed:', e.message);
+    throw e;
+  }
+
+  // Tell the worker to drop its cache and start over
+  if (workerProcess) {
+    workerProcess.postMessage({ type: 'reset-playlists' });
+  }
+
+  return { success: true };
 });
 
 // ============================================================

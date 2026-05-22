@@ -238,8 +238,8 @@
     <div style="margin-top: 40px;" class="visualizer" id="visualizer"></div>
 
     <div class="now-playing" style="margin-top: 20px;">
-      <span class="np-label" style="font-size: 18px;">Now Playing</span>
-      <span class="np-title" id="npTitle">— idle —</span>
+      <span class="np-label" id="npLabel" style="font-size: 18px;">Welcome</span>
+      <span class="np-title" id="npTitle">Open browser to begin</span>
     </div>
 
     <div class="divider"></div>
@@ -277,7 +277,7 @@
       </div>
       <div class="controls" style="margin-top: 30px;">
         <button class="btn btn-primary" id="btnStart" onclick="start()">Start</button>
-        <button class="btn btn-reset" onclick="resetApp()">Restart</button>
+        <button class="btn btn-reset" onclick="resetApp()">Logout</button>
       </div>
     </div>
 
@@ -297,7 +297,8 @@
           </svg>
           Pause
         </button>
-        <button class="btn btn-reset" onclick="resetApp()">Restart</button>
+        <button class="btn btn-reset" id="btnResetPlaylists" onclick="resetPlaylists()">Reset</button>
+        <button class="btn btn-reset" onclick="resetApp()">Logout</button>
       </div>
     </div>
 
@@ -308,13 +309,19 @@
 
     const statusPill = document.getElementById('statusPill');
     const statusText = document.getElementById('statusText');
+    const npLabel    = document.getElementById('npLabel');
     const npTitle    = document.getElementById('npTitle');
     const loginError = document.getElementById('loginError');
     const btnLogin   = document.getElementById('btnLogin');
     const btnPlay    = document.getElementById('btnPlay');
     const btnPause   = document.getElementById('btnPause');
+    const btnResetPlaylists = document.getElementById('btnResetPlaylists');
     const viz        = document.getElementById('visualizer');
 
+    // Track the currently playing playlist title so Pause/Play can preserve it
+    let currentPlaylistTitle = null;
+
+    // ---- Visualizer bars ----
     const heights = [6,8,14,20,28,34,38,34,28,22,16,24,30,36,30,22,18,26,34,38,32,24,16,22,30,36,28,20,14,10,8,6];
     for (let i = 0; i < heights.length; i++) {
       const b = document.createElement('div');
@@ -323,6 +330,13 @@
       b.style.setProperty('--dur', (0.6 + Math.random() * 0.8).toFixed(2) + 's');
       b.style.animationDelay = (i * 0.03).toFixed(2) + 's';
       viz.appendChild(b);
+    }
+
+    // ---- Single source of truth for the header message ----
+    function setMessage(label, title, highlightTitle = false) {
+      npLabel.textContent = label;
+      npTitle.textContent = title || '—';
+      npTitle.classList.toggle('active', highlightTitle && !!title);
     }
 
     function showView(name) {
@@ -343,19 +357,11 @@
       }
     }
 
-    function setNowPlaying(title) {
-      if (title) {
-        npTitle.textContent = title;
-        npTitle.classList.add('active');
-      } else {
-        npTitle.textContent = '— idle —';
-        npTitle.classList.remove('active');
-      }
-    }
-
+    // ---- Actions ----
     function openBrowser() {
       ipcRenderer.send('open-browser', 'chrome');
       setStatus('idle', 'BROWSER OPENED');
+      setMessage('Sign In', 'Enter your credentials below');
       showView('viewLogin');
     }
 
@@ -375,14 +381,17 @@
 
       btnLogin.disabled = true;
       btnLogin.textContent = 'Signing in…';
+      setMessage('Signing In', 'Please wait…');
 
       try {
         const result = await ipcRenderer.invoke('login', { email, password });
         if (result.success) {
           showView('viewConfigure');
           setStatus('idle', 'READY');
+          setMessage('Ready', 'Set duration and press Start');
         } else {
           loginError.textContent = result.message || 'Login failed';
+          setMessage('Sign In', 'Enter your credentials below');
         }
       } catch (e) {
         loginError.textContent = 'Network error: ' + e.message;
@@ -400,6 +409,7 @@
       }
       ipcRenderer.send('start', { duration });
       setStatus('running', 'RUNNING');
+      setMessage('Starting', 'Loading your playlists…');
       showView('viewRunning');
       btnPlay.disabled = true;
       btnPause.disabled = false;
@@ -408,36 +418,82 @@
     function pauseAction() {
       ipcRenderer.send('pause');
       setStatus('paused', 'PAUSED');
+      setMessage('Paused', currentPlaylistTitle || '—', true);
       btnPlay.disabled = false;
       btnPause.disabled = true;
     }
 
     function playAction() {
-      ipcRenderer.send('resume');
+      ipcRenderer.send('resume'); // worker handles both cases (see below)
       setStatus('running', 'RUNNING');
+      setMessage(
+        currentPlaylistTitle ? 'Now Playing' : 'Starting',
+        currentPlaylistTitle || 'Loading next playlist…',
+        !!currentPlaylistTitle
+      );
       btnPlay.disabled = true;
       btnPause.disabled = false;
     }
 
+    // The NEW Reset button — calls the /playlists/reset API on the server
+    async function resetPlaylists() {
+      btnResetPlaylists.disabled = true;
+      btnPlay.disabled = true;
+      btnPause.disabled = true;
+      setMessage('Resetting', 'Pausing and clearing history…');
+      setStatus('idle', 'RESETTING');
+
+      try {
+        await ipcRenderer.invoke('reset-playlists');
+
+        // Success — tell the user explicitly that reset worked and they can resume
+        setMessage('Reset Successful', 'Press Play to resume your playlist');
+        setStatus('paused', 'READY');
+        btnPlay.disabled = false;
+        btnPause.disabled = true;
+
+      } catch (e) {
+        setMessage('Reset Failed', e.message || 'Please try again');
+        setStatus('idle', 'ERROR');
+        btnPlay.disabled = false;
+        btnPause.disabled = true;
+      } finally {
+        btnResetPlaylists.disabled = false;
+      }
+    }
+
+    // The existing Logout button — full reset back to the welcome view
     function resetApp() {
       ipcRenderer.send('reset');
       document.getElementById('loginEmail').value = '';
       document.getElementById('loginPassword').value = '';
       document.getElementById('duration').value = 30;
       loginError.textContent = '';
+      currentPlaylistTitle = null;
       setStatus('idle', 'IDLE');
-      setNowPlaying(null);
+      setMessage('Welcome', 'Open browser to begin');
       showView('viewInitial');
     }
 
+    // ---- Updates from worker ----
     ipcRenderer.on('playlist-update', (e, data) => {
-      setNowPlaying(data.title || data.url || 'Untitled playlist');
+      currentPlaylistTitle = data.title || data.url || 'Untitled playlist';
+      setMessage('Now Playing', currentPlaylistTitle, true);
     });
 
     ipcRenderer.on('playback-state', (e, data) => {
-      if (data.state === 'finished-all') {
+      if (data.state === 'no-playlists') {
+        currentPlaylistTitle = null;
+        setMessage('No Playlists', 'Nothing assigned. Click Reset to replay.');
+        setStatus('idle', 'IDLE');
+        btnPlay.disabled = true;
+        btnPause.disabled = true;
+      } else if (data.state === 'finished-all') {
+        // Only relevant if user is still on the running view
+        if (!document.getElementById('viewInitial').classList.contains('hidden')) return;
+        currentPlaylistTitle = null;
+        setMessage('Completed', 'All playlists played');
         setStatus('idle', 'DONE');
-        setNowPlaying(null);
         showView('viewConfigure');
       }
     });

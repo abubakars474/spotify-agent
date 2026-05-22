@@ -23,6 +23,9 @@ let userBrowser = 'chrome';
 let isPaused = false;
 let pausedAt = null;
 let pausedAccumulatedMs = 0;
+let resetRequested = false;
+
+
 
 // ============================================================
 // BROWSER LAUNCHERS — all use persistent contexts so logins survive
@@ -363,7 +366,6 @@ async function apiNotifyPlayed(playlist) {
 // PLAYLIST LOGIC (mostly unchanged)
 // ============================================================
 async function fetchTask() {
-  // First run, or we finished the current batch → ask the server again
   if (!playlistsLoaded || currentIndex >= playlists.length) {
     console.log('Fetching playlists from API...');
     playlists = await apiFetchPlaylists();
@@ -371,12 +373,12 @@ async function fetchTask() {
     currentIndex = 0;
 
     if (playlists.length === 0) {
-      console.log('Empty playlist response — nothing left to play, exiting');
-      process.exit(0);
+      console.log('No playlists available');
+      emit('playback-state', { state: 'no-playlists' });
+      return null;
     }
     console.log(`Loaded ${playlists.length} playlists`);
   }
-
   return playlists[currentIndex];
 }
 
@@ -522,16 +524,27 @@ const delay = (ms) => new Promise(r => setTimeout(r, ms));
 async function runLoop() {
   while (true) {
     try {
-      // Tick duration only when not paused
+      // Handle reset request (from new Reset button)
+      if (resetRequested) {
+        console.log('Reset: pausing current playback');
+        if (currentPage && !isPaused) {
+          isPaused = true;
+          pausedAt = Date.now();
+          await setSpotifyPlayback('pause').catch(() => {});
+        }
+        resetRequested = false;
+      }
+
+      // Duration check
       if (currentPage && playStartTime && playDurationSeconds && !isPaused) {
-        const effectiveElapsedMs = Date.now() - playStartTime - pausedAccumulatedMs;
-        if (effectiveElapsedMs / 1000 >= playDurationSeconds) {
+        const elapsed = (Date.now() - playStartTime - pausedAccumulatedMs) / 1000;
+        if (elapsed >= playDurationSeconds) {
           console.log('Duration reached, moving on...');
           await stopPlayback();
         }
       }
 
-      // Reset paused-time tracking on a fresh playlist
+      // Start next playlist when nothing is playing
       if (!currentPage) {
         pausedAccumulatedMs = 0;
         isPaused = false;
@@ -541,6 +554,9 @@ async function runLoop() {
         if (task) {
           currentTaskId = task.id;
           await playSpotify(task.spotify_url, currentDuration, userBrowser);
+        } else {
+          await delay(10000);
+          continue;
         }
       }
     } catch (err) {
@@ -601,6 +617,11 @@ async function runLoop() {
           console.log('Resume requested');
           setSpotifyPlayback('play').catch(() => {});
         }
+      }
+
+      if (msg.type === 'reset-playlists') {
+        console.log('Reset playlists signal received');
+        resetRequested = true;
       }
       
     });
