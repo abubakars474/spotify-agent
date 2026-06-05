@@ -14,16 +14,23 @@ let context;
 let currentPage = null;
 let currentTaskId = null;
 let playStartTime = null;
-let currentDuration = 30;
+let currentDuration = 10;
 let userEmail = null;
 let playDurationSeconds = null;
-let currentIndex = 0;
-let playlists = [];
+let currentPlaylist = null;
+let nextPlaylist = null;
 let userBrowser = 'chrome';
 let isPaused = false;
 let pausedAt = null;
 let pausedAccumulatedMs = 0;
 let resetRequested = false;
+let intentionalClose = false;
+let firstFetch = true;
+let playbackStopped = false;
+let offlineReported = false;
+let interruptStartTime = null;
+let lastHealthCheck = null;
+let browserClosed = false;
 
 
 
@@ -311,7 +318,6 @@ let API_BASE     = 'https://myspotify.anvs.xyz/api/v1/';
 let API_USERNAME = null;
 let API_PASSWORD = null;
 let authToken    = null;
-let playlistsLoaded = false;
 
 function emit(type, payload) {
   try { process.parentPort.postMessage({ type, payload }); } catch {}
@@ -337,17 +343,20 @@ async function apiLogin() {
 
 async function apiFetchPlaylists() {
   if (!authToken) await apiLogin();
-  const res = await fetch(`${API_BASE}playlists`, {
+  const res = await fetch(`${API_BASE}playlists?paging=1`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${authToken}` }
   });
   if (res.status === 401) { authToken = null; await apiLogin(); return apiFetchPlaylists(); }
   const json = await res.json();
-  return json?.data?.play_lists || [];
+  return {
+    playlists: json?.data?.play_lists || [],
+    duration:  json?.data?.playing_duration ?? null
+  };
 }
 
 async function apiNotifyPlayed(playlist) {
-  if (!playlist) return;
+  if (!playlist) return null;
   if (!authToken) await apiLogin();
   const form = new FormData();
   if (playlist.id) form.append('play_list_id', String(playlist.id));
@@ -358,28 +367,53 @@ async function apiNotifyPlayed(playlist) {
       body: form
     });
     if (res.status === 401) { authToken = null; await apiLogin(); return apiNotifyPlayed(playlist); }
+    const json = await res.json();
     console.log('Notified server: playlist', playlist.id, 'played');
-  } catch (e) { console.log('Notify failed:', e.message); }
+    if (json?.data?.playing_duration != null) currentDuration = json.data.playing_duration;
+    return json?.data?.next_play_list || null;
+  } catch (e) {
+    console.log('Notify failed:', e.message);
+    return null;
+  }
 }
 
 // ============================================================
-// PLAYLIST LOGIC (mostly unchanged)
+// PLAYLIST LOGIC
 // ============================================================
 async function fetchTask() {
-  if (!playlistsLoaded || currentIndex >= playlists.length) {
-    console.log('Fetching playlists from API...');
-    playlists = await apiFetchPlaylists();
-    playlistsLoaded = true;
-    currentIndex = 0;
-
-    if (playlists.length === 0) {
-      console.log('No playlists available');
-      emit('playback-state', { state: 'no-playlists' });
-      return null;
-    }
-    console.log(`Loaded ${playlists.length} playlists`);
+  if (nextPlaylist) {
+    playbackStopped = false;
+    const task = nextPlaylist;
+    nextPlaylist = null;
+    return task;
   }
-  return playlists[currentIndex];
+
+  // After the first play, only continue if the server provided next_play_list.
+  // Never re-fetch automatically — that would cause unwanted repetition.
+  if (!firstFetch) {
+    if (!playbackStopped) {
+      playbackStopped = true;
+      emit('playback-state', { state: 'no-playlists' });
+    }
+    return null;
+  }
+
+  firstFetch = false;
+  console.log('Fetching first playlist from API...');
+  const { playlists, duration } = await apiFetchPlaylists();
+
+  if (duration != null) {
+    currentDuration = duration;
+    console.log('Duration from API:', currentDuration, 'min');
+  }
+
+  if (playlists.length === 0) {
+    console.log('No playlists available');
+    emit('playback-state', { state: 'no-playlists' });
+    return null;
+  }
+
+  return playlists[0];
 }
 
 
@@ -403,12 +437,29 @@ async function waitForPlaybackStart(page, timeoutMs = 10000) {
   return false;
 }
 
-async function playSpotify(url, duration = 30, browserName) {
+async function playSpotify(url, duration = 10, browserName) {
   const page = await context.newPage();
   currentPage = page;
   console.log('Opening playlist:', url);
 
-  const currentPlaylist = playlists[currentIndex];
+  page.on('crash', () => {
+    console.log('Page crashed');
+    browserClosed = true;
+    emit('interruption', { reason: 'Browser crashed — click Restart to reopen', level: 'error', ui: { status: 'STOPPED', label: 'Browser Crashed', title: 'Click Restart to reopen' } });
+    currentPage = null;
+    playDurationSeconds = null;
+  });
+
+  page.on('close', () => {
+    if (!intentionalClose) {
+      console.log('Page closed externally');
+      browserClosed = true;
+      emit('interruption', { reason: 'Browser closed — click Restart to reopen', level: 'error', ui: { status: 'STOPPED', label: 'Browser Closed', title: 'Click Restart to reopen' } });
+      currentPage = null;
+      playDurationSeconds = null;
+    }
+  });
+
   emit('playlist-update', {
     id:    currentPlaylist?.id,
     title: currentPlaylist?.title || currentPlaylist?.name || 'Untitled playlist',
@@ -422,6 +473,7 @@ async function playSpotify(url, duration = 30, browserName) {
     });
   } catch (e) {
     console.log('Navigation failed:', e.message);
+    emit('interruption', { reason: 'Could not load playlist — check your internet connection' });
     playStartTime = Date.now();
     playDurationSeconds = duration * 60;
     return;
@@ -476,8 +528,10 @@ async function playSpotify(url, duration = 30, browserName) {
   const playing = await waitForPlaybackStart(page, 12000);
   if (playing) {
     console.log('✓ Playback confirmed');
+    emit('interruption', { clear: true });
   } else {
-    console.log('⚠ Could not confirm playback — page may need login, be region-locked, or hit DRM. Moving on after duration.');
+    console.log('⚠ Could not confirm playback');
+    emit('interruption', { reason: 'Playback did not start — Spotify login, DRM, or region issue' });
   }
 
   playStartTime = Date.now();
@@ -505,21 +559,116 @@ async function setSpotifyPlayback(action) {
 async function stopPlayback() {
   if (!currentPage) return;
 
-  // Capture which playlist just finished BEFORE incrementing
-  const finished = playlists[currentIndex];
+  const finished = currentPlaylist;
 
+  intentionalClose = true;
   await currentPage.close().catch(() => {});
+  intentionalClose = false;
 
-  // Fire-and-forget notification to the server
-  await apiNotifyPlayed(finished);
+  const next = await apiNotifyPlayed(finished);
+  if (next) nextPlaylist = next;
 
-  currentIndex += 1;
+  currentPlaylist = null;
   currentPage = null;
   currentTaskId = null;
   playDurationSeconds = null;
 }
 
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
+
+async function checkPageHealth() {
+  if (!currentPage || isPaused) return;
+
+  // Safety net: catch close events the page listener may have missed
+  if (currentPage.isClosed()) {
+    if (!intentionalClose) {
+      browserClosed = true;
+      emit('interruption', { reason: 'Browser closed — click Restart to reopen', level: 'error', ui: { status: 'STOPPED', label: 'Browser Closed', title: 'Click Restart to reopen' } });
+      currentPage = null;
+      playDurationSeconds = null;
+    }
+    return;
+  }
+
+  try {
+    const online = await currentPage.evaluate(() => navigator.onLine);
+    if (!online && !offlineReported) {
+      offlineReported = true;
+      interruptStartTime = Date.now();
+      emit('interruption', { reason: 'Internet connection lost', level: 'error', ui: { status: 'OFFLINE', label: 'Connection Lost', title: 'Waiting for internet…' } });
+    } else if (online && offlineReported) {
+      offlineReported = false;
+      if (!isPaused && currentPage && !currentPage.isClosed() && currentPlaylist) {
+        emit('interruption', { reason: 'Internet restored — reloading playlist…', level: 'error', notify: false, ui: { status: 'LOADING', label: 'Reconnecting', title: 'Reloading playlist…' } });
+        try {
+          await currentPage.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
+          await delay(2000);
+          const btn = currentPage.locator(
+            '[data-testid="action-bar-row"] button[data-testid="play-button"]'
+          ).first();
+          await btn.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
+          await btn.click({ force: true, timeout: 5000 }).catch(() => {});
+          const resumed = await waitForPlaybackStart(currentPage, 8000);
+          if (resumed) {
+            // Exclude the full offline+restore period from the playback timer
+            if (interruptStartTime) {
+              pausedAccumulatedMs += Date.now() - interruptStartTime;
+              interruptStartTime = null;
+            }
+            emit('interruption', { clear: true });
+          } else {
+            interruptStartTime = null;
+            emit('interruption', { reason: 'Could not resume — check Spotify manually' });
+          }
+        } catch (e) {
+          interruptStartTime = null;
+          console.log('Reload after restore failed:', e.message);
+          emit('interruption', { reason: 'Could not resume — check Spotify manually' });
+        }
+      }
+    }
+  } catch (e) {
+    // evaluate() throws when the page is gone or unresponsive
+    if (!intentionalClose) {
+      emit('interruption', { reason: 'Browser became unresponsive' });
+      currentPage = null;
+      playDurationSeconds = null;
+    }
+  }
+}
+
+function isBrowserAlive() {
+  try {
+    if (!context) return false;
+    context.pages(); // throws if browser/context is dead
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function recoverBrowser() {
+  console.log('Browser dead — attempting recovery...');
+  emit('interruption', { reason: 'Browser closed — reopening…', notify: false });
+  try {
+    if (userBrowser === 'firefox' || userBrowser === 'safari') {
+      await startBrowser();
+    } else {
+      // Chrome: ask main process to relaunch, then reconnect via CDP
+      emit('need-browser-relaunch', {});
+      await delay(6000);
+      const browser = await chromium.connectOverCDP('http://localhost:9222');
+      context = browser.contexts()[0];
+    }
+    console.log('Browser recovered');
+    emit('interruption', { clear: true });
+    return true;
+  } catch (e) {
+    console.log('Browser recovery failed:', e.message);
+    emit('interruption', { reason: 'Could not reopen browser — please restart the app' });
+    return false;
+  }
+}
 
 async function runLoop() {
   while (true) {
@@ -535,9 +684,17 @@ async function runLoop() {
         resetRequested = false;
       }
 
-      // Duration check
+      // Active health check — internet + page alive (runs every 10 s)
+      const now = Date.now();
+      if (!lastHealthCheck || now - lastHealthCheck >= 10000) {
+        lastHealthCheck = now;
+        await checkPageHealth();
+      }
+
+      // Duration check — exclude manual pause time AND ongoing interrupt time
       if (currentPage && playStartTime && playDurationSeconds && !isPaused) {
-        const elapsed = (Date.now() - playStartTime - pausedAccumulatedMs) / 1000;
+        const ongoingInterruptMs = interruptStartTime ? Date.now() - interruptStartTime : 0;
+        const elapsed = (Date.now() - playStartTime - pausedAccumulatedMs - ongoingInterruptMs) / 1000;
         if (elapsed >= playDurationSeconds) {
           console.log('Duration reached, moving on...');
           await stopPlayback();
@@ -546,12 +703,28 @@ async function runLoop() {
 
       // Start next playlist when nothing is playing
       if (!currentPage) {
+        // Wait for user to click Restart if browser was closed externally
+        if (browserClosed) {
+          await delay(2000);
+          continue;
+        }
+
         pausedAccumulatedMs = 0;
         isPaused = false;
         pausedAt = null;
 
+        // Recover browser if it was closed
+        if (!isBrowserAlive()) {
+          const recovered = await recoverBrowser();
+          if (!recovered) {
+            await delay(10000);
+            continue;
+          }
+        }
+
         const task = await fetchTask();
         if (task) {
+          currentPlaylist = task;
           currentTaskId = task.id;
           await playSpotify(task.spotify_url, currentDuration, userBrowser);
         } else {
@@ -561,6 +734,7 @@ async function runLoop() {
       }
     } catch (err) {
       console.log('Loop error:', err.message);
+      emit('interruption', { reason: err.message || 'Unexpected error occurred' });
     }
     await delay(2000);
   }
@@ -580,7 +754,7 @@ async function runLoop() {
 
       if (msg.type === 'config' && !configReceived) {
         configReceived = true;
-        currentDuration = Number(msg.duration || 30);
+        currentDuration = Number(msg.duration || 10);
         userBrowser     = msg.browser  || 'chrome';
         API_BASE        = msg.apiBase  || API_BASE;
         authToken       = msg.token    || null;
@@ -621,7 +795,38 @@ async function runLoop() {
 
       if (msg.type === 'reset-playlists') {
         console.log('Reset playlists signal received');
+        nextPlaylist = null;
+        firstFetch = true;
+        playbackStopped = false;
+        offlineReported = false;
+        interruptStartTime = null;
         resetRequested = true;
+      }
+
+      if (msg.type === 'restart-playback') {
+        console.log('Restart playback signal received');
+        browserClosed = false;
+        // Preserve the current playlist — queue it as next so fetchTask reuses it without API call
+        nextPlaylist = currentPlaylist || nextPlaylist;
+        if (!nextPlaylist) firstFetch = true; // nothing to reuse — allow fresh fetch
+
+        playbackStopped = false;
+        offlineReported = false;
+        interruptStartTime = null;
+        isPaused = false;
+        pausedAt = null;
+        pausedAccumulatedMs = 0;
+
+        // Close the current page without notifying the server
+        if (currentPage) {
+          intentionalClose = true;
+          currentPage.close().catch(() => {});
+          intentionalClose = false;
+          currentPage = null;
+        }
+        currentPlaylist = null;
+        playStartTime = null;
+        playDurationSeconds = null;
       }
       
     });

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, utilityProcess } = require('electron');
+const { app, BrowserWindow, ipcMain, utilityProcess, Notification } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -9,7 +9,7 @@ let chromeProcess = null;
 let workerProcess = null;
 
 // Session state
-let userDuration = 30;
+let userDuration = 10;
 let userBrowser  = 'chrome';
 let authToken    = null;
 let userEmail    = null;
@@ -155,6 +155,12 @@ ipcMain.handle('reset-playlists', async () => {
     throw e;
   }
 
+  // Ensure browser is running (relaunch Chrome if it was closed)
+  if (userBrowser === 'chrome') {
+    chromeProcess = null; // allow relaunch in case Chrome exited
+    launchChromeWithCDP();
+  }
+
   // Tell the worker to drop its cache and start over
   if (workerProcess) {
     workerProcess.postMessage({ type: 'reset-playlists' });
@@ -195,6 +201,12 @@ function startWorker() {
       win.webContents.send('playlist-update', msg.payload);
     } else if (msg?.type === 'playback-state') {
       win.webContents.send('playback-state', msg.payload);
+    } else if (msg?.type === 'interruption') {
+      win.webContents.send('interruption', msg.payload);
+    } else if (msg?.type === 'need-browser-relaunch') {
+      console.log('Worker requested browser relaunch');
+      chromeProcess = null; // clear dead reference so launchChromeWithCDP will actually run
+      launchChromeWithCDP();
     }
   });
 
@@ -229,8 +241,7 @@ ipcMain.on('open-browser', (_e, browser) => {
   if (userBrowser === 'chrome') launchChromeWithCDP();
 });
 
-ipcMain.on('start', (_e, data) => {
-  userDuration = Number(data.duration || 30);
+ipcMain.on('start', (_e, _data) => {
   if (!authToken) {
     console.log('Start blocked: not logged in');
     return;
@@ -239,6 +250,24 @@ ipcMain.on('start', (_e, data) => {
 });
 
 ipcMain.on('stop',  () => stopSystem());
+
+ipcMain.on('restart', () => {
+  if (userBrowser === 'chrome') {
+    chromeProcess = null;
+    launchChromeWithCDP();
+  }
+  if (workerProcess) workerProcess.postMessage({ type: 'restart-playback' });
+});
+
+ipcMain.on('show-notification', (_e, { title, body }) => {
+  try {
+    const n = new Notification({ title, body, urgency: 'critical' });
+    n.show();
+    console.log('Notification shown:', title);
+  } catch (e) {
+    console.log('Notification failed:', e.message);
+  }
+});
 
 ipcMain.on('pause', () => {
   if (workerProcess) workerProcess.postMessage({ type: 'pause-playback' });
@@ -264,6 +293,9 @@ ipcMain.on('reset', () => {
 });
 
 
+
+app.setName('Myspotify Agent');
+app.setAppUserModelId('com.spotify.ai');
 
 app.whenReady().then(createWindow);
 app.on('window-all-closed', () => { stopSystem(); app.quit(); });

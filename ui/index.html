@@ -215,6 +215,28 @@
       letter-spacing: .04em; line-height: 1.6;
     }
     .hint b { color: var(--green-dim); font-weight: 600; }
+
+    .interrupt-bar {
+      margin-top: 14px;
+      font-size: 14px;
+      font-weight: 500;
+      color: #92400e;
+      background: rgba(251, 191, 36, 0.12);
+      border: 1.5px solid rgba(251, 191, 36, 0.5);
+      border-radius: 8px;
+      padding: 12px 16px;
+      letter-spacing: .02em;
+      line-height: 1.6;
+      text-align: center;
+    }
+    .interrupt-bar.error {
+      font-size: 16px;
+      font-weight: 600;
+      color: #991b1b;
+      background: rgba(220, 38, 38, 0.08);
+      border: 2px solid rgba(220, 38, 38, 0.5);
+    }
+    .interrupt-bar.hidden { display: none; }
   </style>
 </head>
 <body>
@@ -269,12 +291,8 @@
       </div>
     </div>
 
-    <!-- VIEW 3a: Configure (duration + Start) -->
+    <!-- VIEW 3a: Configure (Start) -->
     <div id="viewConfigure" class="view hidden">
-      <div class="input_group">
-        <label>Playlist duration (minutes)</label>
-        <input id="duration" type="number" min="1" value="15">
-      </div>
       <div class="controls" style="margin-top: 30px;">
         <button class="btn btn-primary" id="btnStart" onclick="start()">Start</button>
         <button class="btn btn-reset" onclick="resetApp()">Logout</button>
@@ -297,10 +315,13 @@
           </svg>
           Pause
         </button>
-        <button class="btn btn-reset" id="btnResetPlaylists" onclick="resetPlaylists()">Reset</button>
+        <button class="btn btn-reset" id="btnResetPlaylists" onclick="restartPlayback()">Restart</button>
         <button class="btn btn-reset" onclick="resetApp()">Logout</button>
       </div>
+      <div id="interruptBar" class="interrupt-bar hidden"></div>
     </div>
+
+    <div style="position:fixed; bottom:12px; right:18px; font-size:11px; font-family:'DM Mono',monospace; color:#888; letter-spacing:.06em; z-index:999; -webkit-app-region:no-drag;">v1.1.0</div>
 
   </div>
 
@@ -316,10 +337,54 @@
     const btnPlay    = document.getElementById('btnPlay');
     const btnPause   = document.getElementById('btnPause');
     const btnResetPlaylists = document.getElementById('btnResetPlaylists');
-    const viz        = document.getElementById('visualizer');
+    const viz          = document.getElementById('visualizer');
+    const interruptBar = document.getElementById('interruptBar');
+
+    function playAlertBeep() {
+      try {
+        const ctx = new AudioContext();
+        const osc  = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = 'sine';
+        osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.4, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.6);
+      } catch (e) {}
+    }
+
+    function sendNotification(title, body) {
+      ipcRenderer.send('show-notification', { title, body });
+    }
+
+    function showInterruption(reason, level, notify = true) {
+      interruptBar.textContent = (level === 'error' ? '✕ ' : '⚠ ') + reason;
+      interruptBar.classList.remove('hidden', 'error');
+      if (level === 'error') {
+        interruptBar.classList.add('error');
+        if (notify) {
+          playAlertBeep();
+          sendNotification(reason, 'Myspotify Agent — click the app to take action');
+        }
+      }
+    }
+    function clearInterruption() {
+      interruptBar.textContent = '';
+      interruptBar.classList.add('hidden');
+      interruptBar.classList.remove('error');
+    }
 
     // Track the currently playing playlist title so Pause/Play can preserve it
     let currentPlaylistTitle = null;
+
+    // ---- Restore saved credentials ----
+    const savedEmail    = localStorage.getItem('savedEmail');
+    const savedPassword = localStorage.getItem('savedPassword');
+    if (savedEmail)    document.getElementById('loginEmail').value    = savedEmail;
+    if (savedPassword) document.getElementById('loginPassword').value = savedPassword;
 
     // ---- Visualizer bars ----
     const heights = [6,8,14,20,28,34,38,34,28,22,16,24,30,36,30,22,18,26,34,38,32,24,16,22,30,36,28,20,14,10,8,6];
@@ -386,9 +451,11 @@
       try {
         const result = await ipcRenderer.invoke('login', { email, password });
         if (result.success) {
+          localStorage.setItem('savedEmail', email);
+          localStorage.setItem('savedPassword', password);
           showView('viewConfigure');
           setStatus('idle', 'READY');
-          setMessage('Ready', 'Set duration and press Start');
+          setMessage('Ready', 'Press Start to begin');
         } else {
           loginError.textContent = result.message || 'Login failed';
           setMessage('Sign In', 'Enter your credentials below');
@@ -402,12 +469,8 @@
     }
 
     function start() {
-      const duration = Number(document.getElementById('duration').value);
-      if (!duration || duration <= 0) {
-        alert('Enter a valid duration');
-        return;
-      }
-      ipcRenderer.send('start', { duration });
+      clearInterruption();
+      ipcRenderer.send('start', {});
       setStatus('running', 'RUNNING');
       setMessage('Starting', 'Loading your playlists…');
       showView('viewRunning');
@@ -435,39 +498,26 @@
       btnPause.disabled = false;
     }
 
-    // The NEW Reset button — calls the /playlists/reset API on the server
-    async function resetPlaylists() {
+    // Restart — reopen browser with the same playlist, no API call
+    function restartPlayback() {
       btnResetPlaylists.disabled = true;
-      btnPlay.disabled = true;
-      btnPause.disabled = true;
-      setMessage('Resetting', 'Pausing and clearing history…');
-      setStatus('idle', 'RESETTING');
-
-      try {
-        await ipcRenderer.invoke('reset-playlists');
-
-        // Success — tell the user explicitly that reset worked and they can resume
-        setMessage('Reset Successful', 'Press Play to resume your playlist');
-        setStatus('paused', 'READY');
-        btnPlay.disabled = false;
-        btnPause.disabled = true;
-
-      } catch (e) {
-        setMessage('Reset Failed', e.message || 'Please try again');
-        setStatus('idle', 'ERROR');
-        btnPlay.disabled = false;
-        btnPause.disabled = true;
-      } finally {
+      setMessage('Restarting', 'Reopening browser…');
+      setStatus('idle', 'RESTARTING');
+      ipcRenderer.send('restart');
+      setTimeout(() => {
         btnResetPlaylists.disabled = false;
-      }
+        setStatus('running', 'RUNNING');
+        setMessage('Starting', 'Loading playlist…');
+        btnPlay.disabled = true;
+        btnPause.disabled = false;
+      }, 1000);
     }
 
     // The existing Logout button — full reset back to the welcome view
     function resetApp() {
       ipcRenderer.send('reset');
-      document.getElementById('loginEmail').value = '';
-      document.getElementById('loginPassword').value = '';
-      document.getElementById('duration').value = 30;
+      document.getElementById('loginEmail').value = localStorage.getItem('savedEmail') || '';
+      document.getElementById('loginPassword').value = localStorage.getItem('savedPassword') || '';
       loginError.textContent = '';
       currentPlaylistTitle = null;
       setStatus('idle', 'IDLE');
@@ -477,8 +527,29 @@
 
     // ---- Updates from worker ----
     ipcRenderer.on('playlist-update', (e, data) => {
+      clearInterruption();
       currentPlaylistTitle = data.title || data.url || 'Untitled playlist';
       setMessage('Now Playing', currentPlaylistTitle, true);
+    });
+
+    ipcRenderer.on('interruption', (e, data) => {
+      if (!data) return;
+      if (data.clear) {
+        clearInterruption();
+        setStatus('running', 'RUNNING');
+        setMessage('Now Playing', currentPlaylistTitle || '—', !!currentPlaylistTitle);
+        btnPause.disabled = false;
+      } else if (data.reason) {
+        showInterruption(data.reason, data.level, data.notify !== false);
+        if (data.ui) {
+          setStatus('paused', data.ui.status || 'INTERRUPTED');
+          setMessage(data.ui.label || 'Interrupted', data.ui.title || '—');
+        }
+        if (data.level === 'error') {
+          btnPause.disabled = true;
+          btnPlay.disabled = true;
+        }
+      }
     });
 
     ipcRenderer.on('playback-state', (e, data) => {
