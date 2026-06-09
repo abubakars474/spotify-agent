@@ -31,6 +31,7 @@ let offlineReported = false;
 let interruptStartTime = null;
 let lastHealthCheck = null;
 let browserClosed = false;
+let lastKnownPlaying = null; // null = unknown, true = playing, false = paused
 
 
 
@@ -438,27 +439,33 @@ async function waitForPlaybackStart(page, timeoutMs = 10000) {
 }
 
 async function playSpotify(url, duration = 10, browserName) {
-  const page = await context.newPage();
+  // Reuse the existing open tab rather than opening a new one each time
+  let page = context.pages().find(p => !p.isClosed());
+  if (!page) page = await context.newPage();
+  const isNewPage = page !== currentPage;
   currentPage = page;
   console.log('Opening playlist:', url);
 
-  page.on('crash', () => {
-    console.log('Page crashed');
-    browserClosed = true;
-    emit('interruption', { reason: 'Browser crashed — click Restart to reopen', level: 'error', ui: { status: 'STOPPED', label: 'Browser Crashed', title: 'Click Restart to reopen' } });
-    currentPage = null;
-    playDurationSeconds = null;
-  });
-
-  page.on('close', () => {
-    if (!intentionalClose) {
-      console.log('Page closed externally');
+  // Only attach crash/close handlers on a fresh page to avoid duplicates
+  if (isNewPage) {
+    page.on('crash', () => {
+      console.log('Page crashed');
       browserClosed = true;
-      emit('interruption', { reason: 'Browser closed — click Restart to reopen', level: 'error', ui: { status: 'STOPPED', label: 'Browser Closed', title: 'Click Restart to reopen' } });
+      emit('interruption', { reason: 'Browser crashed — click Restart to reopen', level: 'error', ui: { status: 'STOPPED', label: 'Browser Crashed', title: 'Click Restart to reopen' } });
       currentPage = null;
       playDurationSeconds = null;
-    }
-  });
+    });
+
+    page.on('close', () => {
+      if (!intentionalClose) {
+        console.log('Page closed externally');
+        browserClosed = true;
+        emit('interruption', { reason: 'Browser closed — click Restart to reopen', level: 'error', ui: { status: 'STOPPED', label: 'Browser Closed', title: 'Click Restart to reopen' } });
+        currentPage = null;
+        playDurationSeconds = null;
+      }
+    });
+  }
 
   emit('playlist-update', {
     id:    currentPlaylist?.id,
@@ -533,6 +540,7 @@ async function playSpotify(url, duration = 10, browserName) {
     console.log('⚠ Could not confirm playback');
     emit('interruption', { reason: 'Playback did not start — Spotify login, DRM, or region issue' });
   }
+  lastKnownPlaying = playing;
 
   playStartTime = Date.now();
   playDurationSeconds = duration * 60;
@@ -561,9 +569,8 @@ async function stopPlayback() {
 
   const finished = currentPlaylist;
 
-  intentionalClose = true;
-  await currentPage.close().catch(() => {});
-  intentionalClose = false;
+  // Navigate away instead of closing — keeps a single tab open for the next playlist
+  await currentPage.goto('about:blank', { timeout: 5000 }).catch(() => {});
 
   const next = await apiNotifyPlayed(finished);
   if (next) nextPlaylist = next;
@@ -572,6 +579,7 @@ async function stopPlayback() {
   currentPage = null;
   currentTaskId = null;
   playDurationSeconds = null;
+  lastKnownPlaying = null;
 }
 
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
@@ -691,6 +699,31 @@ async function runLoop() {
         await checkPageHealth();
       }
 
+      // Detect manual play/pause in the browser tab
+      if (currentPage && !currentPage.isClosed() && playDurationSeconds) {
+        const nowPlaying = await currentPage.evaluate(() => {
+          const btn = document.querySelector('[data-testid="control-button-playpause"]');
+          if (!btn) return null;
+          return (btn.getAttribute('aria-label') || '').toLowerCase().includes('pause');
+        }).catch(() => null);
+
+        if (nowPlaying !== null && lastKnownPlaying !== null && nowPlaying !== lastKnownPlaying) {
+          emit('playback-changed', { playing: nowPlaying });
+          console.log('Browser playback changed:', nowPlaying ? 'playing' : 'paused');
+
+          // Sync isPaused so the app's Play/Pause buttons stay functional
+          if (!nowPlaying && !isPaused) {
+            isPaused = true;
+            pausedAt = Date.now();
+          } else if (nowPlaying && isPaused) {
+            if (pausedAt) pausedAccumulatedMs += Date.now() - pausedAt;
+            pausedAt = null;
+            isPaused = false;
+          }
+        }
+        if (nowPlaying !== null) lastKnownPlaying = nowPlaying;
+      }
+
       // Duration check — exclude manual pause time AND ongoing interrupt time
       if (currentPage && playStartTime && playDurationSeconds && !isPaused) {
         const ongoingInterruptMs = interruptStartTime ? Date.now() - interruptStartTime : 0;
@@ -778,6 +811,7 @@ async function runLoop() {
         if (!isPaused) {
           isPaused = true;
           pausedAt = Date.now();
+          lastKnownPlaying = false; // app-initiated — don't re-notify
           console.log('Pause requested');
           setSpotifyPlayback('pause').catch(() => {});
         }
@@ -788,6 +822,7 @@ async function runLoop() {
           pausedAccumulatedMs += Date.now() - pausedAt;
           pausedAt = null;
           isPaused = false;
+          lastKnownPlaying = true; // app-initiated — don't re-notify
           console.log('Resume requested');
           setSpotifyPlayback('play').catch(() => {});
         }
@@ -817,11 +852,9 @@ async function runLoop() {
         pausedAt = null;
         pausedAccumulatedMs = 0;
 
-        // Close the current page without notifying the server
+        // Navigate away without notifying the server — keeps the single tab open
         if (currentPage) {
-          intentionalClose = true;
-          currentPage.close().catch(() => {});
-          intentionalClose = false;
+          currentPage.goto('about:blank', { timeout: 5000 }).catch(() => {});
           currentPage = null;
         }
         currentPlaylist = null;

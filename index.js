@@ -203,6 +203,8 @@ function startWorker() {
       win.webContents.send('playback-state', msg.payload);
     } else if (msg?.type === 'interruption') {
       win.webContents.send('interruption', msg.payload);
+    } else if (msg?.type === 'playback-changed') {
+      win.webContents.send('playback-changed', msg.payload);
     } else if (msg?.type === 'need-browser-relaunch') {
       console.log('Worker requested browser relaunch');
       chromeProcess = null; // clear dead reference so launchChromeWithCDP will actually run
@@ -252,11 +254,10 @@ ipcMain.on('start', (_e, _data) => {
 ipcMain.on('stop',  () => stopSystem());
 
 ipcMain.on('restart', () => {
-  if (userBrowser === 'chrome') {
-    chromeProcess = null;
-    launchChromeWithCDP();
-  }
   if (workerProcess) workerProcess.postMessage({ type: 'restart-playback' });
+  // Don't relaunch Chrome here — if it's still open the worker reuses the existing tab.
+  // If it was closed externally, the worker's recoverBrowser() emits need-browser-relaunch
+  // which triggers launchChromeWithCDP() through the normal recovery path.
 });
 
 ipcMain.on('show-notification', (_e, { title, body }) => {

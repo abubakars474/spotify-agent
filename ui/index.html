@@ -552,6 +552,20 @@
       }
     });
 
+    ipcRenderer.on('playback-changed', (e, data) => {
+      if (data.playing) {
+        setStatus('running', 'RUNNING');
+        setMessage('Now Playing', currentPlaylistTitle || '—', !!currentPlaylistTitle);
+        btnPlay.disabled = true;
+        btnPause.disabled = false;
+      } else {
+        setStatus('paused', 'PAUSED');
+        setMessage('Paused', currentPlaylistTitle || '—', true);
+        btnPlay.disabled = false;
+        btnPause.disabled = true;
+      }
+    });
+
     ipcRenderer.on('playback-state', (e, data) => {
       if (data.state === 'no-playlists') {
         currentPlaylistTitle = null;
