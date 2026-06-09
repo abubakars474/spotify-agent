@@ -32,6 +32,7 @@ let interruptStartTime = null;
 let lastHealthCheck = null;
 let browserClosed = false;
 let lastKnownPlaying = null; // null = unknown, true = playing, false = paused
+let lastKnownUrl = null;
 
 
 
@@ -486,7 +487,18 @@ async function playSpotify(url, duration = 10, browserName) {
     return;
   }
 
+  lastKnownUrl = page.url();
   await page.bringToFront();
+
+  // Read the real playlist title from Spotify's h1 element once it loads
+  try {
+    const titleLocator = page.locator('[data-testid="entityTitle"] h1').first();
+    await titleLocator.waitFor({ state: 'visible', timeout: 12000 });
+    const realTitle = (await titleLocator.textContent())?.trim();
+    if (realTitle) {
+      emit('playlist-update', { id: currentPlaylist?.id, title: realTitle, url });
+    }
+  } catch (_) {}
 
   // Scope to the playlist header action bar — not every track row
   const mainPlayBtn = page.locator(
@@ -580,6 +592,7 @@ async function stopPlayback() {
   currentTaskId = null;
   playDurationSeconds = null;
   lastKnownPlaying = null;
+  lastKnownUrl = null;
 }
 
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
@@ -697,6 +710,25 @@ async function runLoop() {
       if (!lastHealthCheck || now - lastHealthCheck >= 10000) {
         lastHealthCheck = now;
         await checkPageHealth();
+      }
+
+      // Detect when user manually navigates to a different playlist in the browser
+      if (currentPage && !currentPage.isClosed() && playDurationSeconds) {
+        const currentUrl = currentPage.url();
+        if (currentUrl && currentUrl !== lastKnownUrl &&
+            currentUrl.includes('open.spotify.com') &&
+            !currentUrl.includes('about:blank')) {
+          lastKnownUrl = currentUrl;
+          try {
+            const titleLocator = currentPage.locator('[data-testid="entityTitle"] h1').first();
+            await titleLocator.waitFor({ state: 'visible', timeout: 5000 });
+            const realTitle = (await titleLocator.textContent())?.trim();
+            if (realTitle) {
+              emit('playlist-update', { id: currentPlaylist?.id, title: realTitle, url: currentUrl });
+              console.log('Manual navigation detected, title:', realTitle);
+            }
+          } catch (_) {}
+        }
       }
 
       // Detect manual play/pause in the browser tab
