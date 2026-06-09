@@ -33,6 +33,8 @@ let lastHealthCheck = null;
 let browserClosed = false;
 let lastKnownPlaying = null; // null = unknown, true = playing, false = paused
 let lastKnownUrl = null;
+let manualNavInterrupted = false; // true when user manually changed playlist in browser
+let navigatingBack = false;       // true while we are restoring the original playlist
 
 
 
@@ -713,21 +715,28 @@ async function runLoop() {
       }
 
       // Detect when user manually navigates to a different playlist in the browser
-      if (currentPage && !currentPage.isClosed() && playDurationSeconds) {
+      if (!navigatingBack && currentPage && !currentPage.isClosed() && playDurationSeconds) {
         const currentUrl = currentPage.url();
         if (currentUrl && currentUrl !== lastKnownUrl &&
             currentUrl.includes('open.spotify.com') &&
             !currentUrl.includes('about:blank')) {
           lastKnownUrl = currentUrl;
-          try {
-            const titleLocator = currentPage.locator('[data-testid="entityTitle"] h1').first();
-            await titleLocator.waitFor({ state: 'visible', timeout: 5000 });
-            const realTitle = (await titleLocator.textContent())?.trim();
-            if (realTitle) {
-              emit('playlist-update', { id: currentPlaylist?.id, title: realTitle, url: currentUrl });
-              console.log('Manual navigation detected, title:', realTitle);
-            }
-          } catch (_) {}
+
+          // Pause the app timer and actual Spotify audio
+          if (!isPaused) {
+            isPaused = true;
+            pausedAt = Date.now();
+          }
+          lastKnownPlaying = false;
+          manualNavInterrupted = true;
+          await setSpotifyPlayback('pause').catch(() => {});
+
+          emit('interruption', {
+            reason: 'Playlist changed manually in browser — press Play to resume',
+            ui: { status: 'PAUSED', label: 'PAUSED', title: currentPlaylist?.title || '—' }
+          });
+          emit('playback-changed', { playing: false });
+          console.log('Manual navigation detected — kept original title:', currentPlaylist?.title);
         }
       }
 
@@ -850,7 +859,39 @@ async function runLoop() {
       }
 
       if (msg.type === 'resume-playback') {
-        if (isPaused && pausedAt) {
+        if (manualNavInterrupted && currentPlaylist?.spotify_url && currentPage && !currentPage.isClosed()) {
+          // User pressed Play after manually navigating away — restore our original playlist
+          manualNavInterrupted = false;
+          navigatingBack = true;
+          const origUrl = currentPlaylist.spotify_url;
+          lastKnownUrl = origUrl; // pre-set so URL detector won't re-fire during navigation
+          try {
+            await currentPage.goto(origUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await currentPage.bringToFront();
+            const mainPlayBtn = currentPage.locator(
+              '[data-testid="action-bar-row"] button[data-testid="play-button"]'
+            ).first();
+            await mainPlayBtn.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
+            await mainPlayBtn.click({ force: true, timeout: 5000 }).catch(() => {});
+            const playing = await waitForPlaybackStart(currentPage, 8000);
+            lastKnownPlaying = playing;
+            if (playing) {
+              if (pausedAt) { pausedAccumulatedMs += Date.now() - pausedAt; pausedAt = null; }
+              isPaused = false;
+              emit('interruption', { clear: true });
+              emit('playback-changed', { playing: true });
+              console.log('Restored original playlist:', origUrl);
+            } else {
+              emit('interruption', { reason: 'Playback did not start — try again' });
+            }
+          } catch (e) {
+            console.log('Restore navigation failed:', e.message);
+            emit('interruption', { reason: 'Could not restore playlist — try Restart' });
+          } finally {
+            navigatingBack = false;
+          }
+        } else if (isPaused && pausedAt) {
+          // Normal resume — just unpause in place
           pausedAccumulatedMs += Date.now() - pausedAt;
           pausedAt = null;
           isPaused = false;
