@@ -901,6 +901,12 @@ async function runLoop() {
         }
       }
 
+      if (msg.type === 'retry-fetch') {
+        console.log('Retry fetch signal received');
+        firstFetch = true;
+        playbackStopped = false;
+      }
+
       if (msg.type === 'reset-playlists') {
         console.log('Reset playlists signal received');
         nextPlaylist = null;

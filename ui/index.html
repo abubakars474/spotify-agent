@@ -474,6 +474,7 @@
       setStatus('running', 'RUNNING');
       setMessage('Starting', 'Loading your playlists…');
       showView('viewRunning');
+      showRestartButton();
       btnPlay.disabled = true;
       btnPause.disabled = false;
     }
@@ -513,6 +514,27 @@
       }, 1000);
     }
 
+    // Retry — ask the worker to fetch a playlist from the API again
+    function retryFetch() {
+      btnResetPlaylists.disabled = true;
+      setMessage('Retrying', 'Fetching playlist…');
+      setStatus('idle', 'RETRYING');
+      ipcRenderer.send('retry-fetch');
+      setTimeout(() => {
+        btnResetPlaylists.disabled = false;
+      }, 1000);
+    }
+
+    function showRetryButton() {
+      btnResetPlaylists.textContent = 'Retry';
+      btnResetPlaylists.onclick = retryFetch;
+    }
+
+    function showRestartButton() {
+      btnResetPlaylists.textContent = 'Restart';
+      btnResetPlaylists.onclick = restartPlayback;
+    }
+
     // The existing Logout button — full reset back to the welcome view
     function resetApp() {
       ipcRenderer.send('reset');
@@ -530,6 +552,7 @@
       clearInterruption();
       currentPlaylistTitle = data.title || data.url || 'Untitled playlist';
       setMessage('Now Playing', currentPlaylistTitle, true);
+      showRestartButton();
     });
 
     ipcRenderer.on('interruption', (e, data) => {
@@ -569,10 +592,11 @@
     ipcRenderer.on('playback-state', (e, data) => {
       if (data.state === 'no-playlists') {
         currentPlaylistTitle = null;
-        setMessage('No Playlists', 'Nothing assigned. Click Reset to replay.');
+        setMessage('No Playlists', 'Nothing assigned. Click Retry to fetch again.');
         setStatus('idle', 'IDLE');
         btnPlay.disabled = true;
         btnPause.disabled = true;
+        showRetryButton();
       } else if (data.state === 'finished-all') {
         // Only relevant if user is still on the running view
         if (!document.getElementById('viewInitial').classList.contains('hidden')) return;

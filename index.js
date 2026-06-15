@@ -253,6 +253,10 @@ ipcMain.on('start', (_e, _data) => {
 
 ipcMain.on('stop',  () => stopSystem());
 
+ipcMain.on('retry-fetch', () => {
+  if (workerProcess) workerProcess.postMessage({ type: 'retry-fetch' });
+});
+
 ipcMain.on('restart', () => {
   if (workerProcess) workerProcess.postMessage({ type: 'restart-playback' });
   // Don't relaunch Chrome here — if it's still open the worker reuses the existing tab.
