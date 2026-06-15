@@ -44,6 +44,13 @@ function getChromePath() {
 
 function launchChromeWithCDP() {
   if (chromeProcess) return;
+
+  // A Chrome instance from a previous run/relaunch may still be alive with
+  // the same --user-data-dir. Spawning another one would just hand off
+  // --new-window to that existing instance, leaving two windows open.
+  // Close it first so we always end up with a single fresh window.
+  stopChrome();
+
   const userDataDir = os.platform() === 'win32'
     ? 'C:\\temp\\spotify-agent-profile'
     : '/tmp/spotify-electron-profile';
