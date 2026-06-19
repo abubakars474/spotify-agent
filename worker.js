@@ -33,8 +33,9 @@ let lastHealthCheck = null;
 let browserClosed = false;
 let lastKnownPlaying = null; // null = unknown, true = playing, false = paused
 let lastKnownUrl = null;
-let manualNavInterrupted = false; // true when user manually changed playlist in browser
-let navigatingBack = false;       // true while we are restoring the original playlist
+let manualNavInterrupted = false;   // true when user manually changed playlist in browser
+let navigatingBack = false;         // true while we are restoring the original playlist
+let browserPauseInterrupted = false; // true when browser-tab pause triggered an app message
 
 
 
@@ -752,14 +753,25 @@ async function runLoop() {
           emit('playback-changed', { playing: nowPlaying });
           console.log('Browser playback changed:', nowPlaying ? 'playing' : 'paused');
 
-          // Sync isPaused so the app's Play/Pause buttons stay functional
           if (!nowPlaying && !isPaused) {
+            // Browser-initiated pause — show message in app (no beep)
             isPaused = true;
             pausedAt = Date.now();
+            browserPauseInterrupted = true;
+            emit('interruption', {
+              reason: 'Playback paused — press Play to resume',
+              notify: false,
+              ui: { status: 'PAUSED', label: 'PAUSED', title: currentPlaylist?.title || '—' }
+            });
           } else if (nowPlaying && isPaused) {
             if (pausedAt) pausedAccumulatedMs += Date.now() - pausedAt;
             pausedAt = null;
             isPaused = false;
+            // Browser-initiated resume — clear the pause message if it was set
+            if (browserPauseInterrupted) {
+              browserPauseInterrupted = false;
+              emit('interruption', { clear: true });
+            }
           }
         }
         if (nowPlaying !== null) lastKnownPlaying = nowPlaying;
@@ -897,6 +909,11 @@ async function runLoop() {
           isPaused = false;
           lastKnownPlaying = true; // app-initiated — don't re-notify
           console.log('Resume requested');
+          // Clear browser-pause message if it was showing (app button overrides)
+          if (browserPauseInterrupted) {
+            browserPauseInterrupted = false;
+            emit('interruption', { clear: true });
+          }
           setSpotifyPlayback('play').catch(() => {});
         }
       }
