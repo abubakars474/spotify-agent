@@ -566,7 +566,7 @@
         showInterruption(data.reason, data.level, data.notify !== false);
         if (data.ui) {
           setStatus('paused', data.ui.status || 'INTERRUPTED');
-          setMessage(data.ui.label || 'Interrupted', data.ui.title || '—');
+          setMessage(data.ui.label || 'Interrupted', currentPlaylistTitle || data.ui.title || '—', true);
         }
         if (data.level === 'error') {
           btnPause.disabled = true;
