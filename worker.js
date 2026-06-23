@@ -31,13 +31,20 @@ let offlineReported = false;
 let interruptStartTime = null;
 let lastHealthCheck = null;
 let browserClosed = false;
-let lastKnownPlaying = null; // null = unknown, true = playing, false = paused
+let autoRestartAttempts = 0;   // consecutive failed browser-restart attempts
+let lastAutoRestartAt = 0;     // timestamp of last auto-restart attempt
+let needsSessionRestore = false; // true after browser fully dies and is recreated
+let lastKnownPlaying = null;   // null = unknown, true = playing, false = paused
 let lastKnownUrl = null;
 let manualNavInterrupted = false;   // true when user manually changed playlist in browser
 let navigatingBack = false;         // true while we are restoring the original playlist
 let browserPauseInterrupted = false; // true when browser-tab pause triggered an app message
+let playlistTrackIds = new Set();   // track IDs from the current playlist (excludes recommendations)
+let offPlaylistCount = 0;           // consecutive polls detecting an off-playlist / recommendation song
+let offPlaylistWarned = false;      // true while the off-playlist warning is showing
 
-
+let playbackResumeAttempts = 0;
+const MAX_PLAYBACK_RESUME_ATTEMPTS = 2;
 
 // ============================================================
 // BROWSER LAUNCHERS — all use persistent contexts so logins survive
@@ -443,9 +450,25 @@ async function waitForPlaybackStart(page, timeoutMs = 10000) {
 }
 
 async function playSpotify(url, duration = 10, browserName) {
+  // Reset off-playlist state for the incoming playlist
+  playlistTrackIds = new Set();
+  offPlaylistCount = 0;
+  offPlaylistWarned = false;
+
   // Reuse the existing open tab rather than opening a new one each time
-  let page = context.pages().find(p => !p.isClosed());
-  if (!page) page = await context.newPage();
+  const existingPages = context.pages().filter(p => !p.isClosed());
+  console.log(`[PLAY] context has ${existingPages.length} open page(s): ${existingPages.map(p => p.url()).join(', ')}`);
+  let page = existingPages[0];
+  let wasNewPage = false;
+  if (!page) {
+    page = await context.newPage();
+    wasNewPage = true;
+    console.log('[PLAY] Created new tab — restoring session cookies...');
+    // sp_dc is a session cookie cleared by Chrome when the last tab closes.
+    // Re-inject the saved cookies so Spotify doesn't show the login modal.
+    await restoreSession();
+    needsSessionRestore = true; // also inject localStorage before Spotify loads
+  }
   const isNewPage = page !== currentPage;
   currentPage = page;
   console.log('Opening playlist:', url);
@@ -455,7 +478,9 @@ async function playSpotify(url, duration = 10, browserName) {
     page.on('crash', () => {
       console.log('Page crashed');
       browserClosed = true;
-      emit('interruption', { reason: 'Browser crashed — click Restart to reopen', level: 'error', ui: { status: 'STOPPED', label: 'Browser Crashed', title: 'Click Restart to reopen' } });
+      autoRestartAttempts = 0;
+      lastAutoRestartAt = 0;
+      emit('interruption', { reason: 'Browser crashed — attempting restart…', level: 'error', ui: { status: 'STOPPED', label: 'Browser Crashed', title: 'Restarting…' } });
       currentPage = null;
       playDurationSeconds = null;
     });
@@ -464,7 +489,9 @@ async function playSpotify(url, duration = 10, browserName) {
       if (!intentionalClose) {
         console.log('Page closed externally');
         browserClosed = true;
-        emit('interruption', { reason: 'Browser closed — click Restart to reopen', level: 'error', ui: { status: 'STOPPED', label: 'Browser Closed', title: 'Click Restart to reopen' } });
+        autoRestartAttempts = 0;
+        lastAutoRestartAt = 0;
+        emit('interruption', { reason: 'Browser closed — attempting restart…', level: 'error', ui: { status: 'STOPPED', label: 'Browser Closed', title: 'Restarting…' } });
         currentPage = null;
         playDurationSeconds = null;
       }
@@ -476,6 +503,26 @@ async function playSpotify(url, duration = 10, browserName) {
     title: currentPlaylist?.title || currentPlaylist?.name || 'Untitled playlist',
     url:   url
   });
+
+  // After browser recovery, inject saved localStorage so Spotify stays logged in.
+  // Cookies are already injected via restoreSession() in recoverBrowser().
+  // localStorage must be queued via addInitScript() so it runs before Spotify's auth code.
+  if (needsSessionRestore && fs.existsSync(SESSION_FILE)) {
+    needsSessionRestore = false;
+    try {
+      const saved = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8'));
+      const spotifyItems = saved.origins?.find(o => o.origin === 'https://open.spotify.com')?.localStorage;
+      if (spotifyItems?.length) {
+        await page.addInitScript(items => {
+          for (const { name, value } of items) {
+            try { window.localStorage.setItem(name, value); } catch (_) {}
+          }
+        }, spotifyItems);
+      }
+    } catch (e) {
+      console.log('Session localStorage restore error:', e.message);
+    }
+  }
 
   try {
     await page.goto(url, {
@@ -491,6 +538,9 @@ async function playSpotify(url, duration = 10, browserName) {
   }
 
   lastKnownUrl = page.url();
+  const landedUrl = page.url();
+  const isLoginPage = landedUrl.includes('accounts.spotify.com') || landedUrl.includes('/login') || landedUrl.includes('/signup');
+  console.log(`[NAV] Landed on: ${landedUrl}${isLoginPage ? ' ⚠ SPOTIFY LOGIN PAGE — user is logged out!' : ' ✓ logged in'}`);
   await page.bringToFront();
 
   // Read the real playlist title from Spotify's h1 element once it loads
@@ -551,11 +601,29 @@ async function playSpotify(url, duration = 10, browserName) {
   if (playing) {
     console.log('✓ Playback confirmed');
     emit('interruption', { clear: true });
+    saveSession(); // persist cookies + localStorage while we know the user is logged in
   } else {
     console.log('⚠ Could not confirm playback');
     emit('interruption', { reason: 'Playback did not start — Spotify login, DRM, or region issue' });
   }
   lastKnownPlaying = playing;
+
+  // Collect playlist track IDs from DOM — exclude anything inside [data-testid="recommended-track"]
+  if (playing && currentPage && !currentPage.isClosed()) {
+    try {
+      const ids = await currentPage.evaluate(() => {
+        return Array.from(
+          document.querySelectorAll('a[data-testid="internal-track-link"]')
+        ).filter(a => !a.closest('[data-testid="recommended-track"]'))
+         .map(a => {
+           const m = (a.getAttribute('href') || '').match(/\/track\/([^/?]+)/);
+           return m ? m[1] : null;
+         }).filter(Boolean);
+      });
+      ids.forEach(id => playlistTrackIds.add(id));
+      console.log(`Collected ${playlistTrackIds.size} playlist track IDs`);
+    } catch (_) {}
+  }
 
   playStartTime = Date.now();
   playDurationSeconds = duration * 60;
@@ -596,18 +664,65 @@ async function stopPlayback() {
   playDurationSeconds = null;
   lastKnownPlaying = null;
   lastKnownUrl = null;
+  playlistTrackIds = new Set();
+  offPlaylistCount = 0;
+  offPlaylistWarned = false;
 }
 
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
+const SESSION_FILE = path.join(os.homedir(), '.spotify-agent-session.json');
+let lastSessionSaveAt = 0;
+
+// Persist Spotify cookies + localStorage to disk so they survive a full browser restart.
+// For Firefox/Safari, launchPersistentContext already handles this in the profile dir.
+// For Chrome (CDP), we save explicitly because the main process may relaunch Chrome fresh.
+async function saveSession() {
+  if (!context) return;
+  try {
+    const state = await context.storageState();
+    const spCookie = state.cookies?.find(c => c.name === 'sp_dc');
+    const lsItems = state.origins?.find(o => o.origin === 'https://open.spotify.com')?.localStorage?.length ?? 0;
+    console.log(`[SESSION SAVE] cookies=${state.cookies?.length ?? 0} sp_dc=${spCookie ? 'YES' : 'NO'} localStorage=${lsItems} → ${SESSION_FILE}`);
+    fs.writeFileSync(SESSION_FILE, JSON.stringify(state));
+    lastSessionSaveAt = Date.now();
+  } catch (e) {
+    console.log('[SESSION SAVE] failed:', e.message);
+  }
+}
+
+async function restoreSession() {
+  if (!context) { console.log('[SESSION RESTORE] skipped — no context'); return; }
+  if (!fs.existsSync(SESSION_FILE)) { console.log('[SESSION RESTORE] skipped — no session file at', SESSION_FILE); return; }
+  try {
+    const state = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8'));
+    const spCookie = state.cookies?.find(c => c.name === 'sp_dc');
+    const lsItems = state.origins?.find(o => o.origin === 'https://open.spotify.com')?.localStorage?.length ?? 0;
+    console.log(`[SESSION RESTORE] file has cookies=${state.cookies?.length ?? 0} sp_dc=${spCookie ? 'YES (expires ' + new Date(spCookie.expires * 1000).toISOString() + ')' : 'NO'} localStorage=${lsItems}`);
+    if (state.cookies?.length) {
+      await context.addCookies(state.cookies);
+      console.log('[SESSION RESTORE] cookies injected into context');
+    }
+  } catch (e) {
+    console.log('[SESSION RESTORE] failed:', e.message);
+  }
+}
+
 async function checkPageHealth() {
   if (!currentPage || isPaused) return;
+
+  // Periodically save Spotify session so it survives a full browser restart
+  if (Date.now() - lastSessionSaveAt >= 60000) {
+    await saveSession();
+  }
 
   // Safety net: catch close events the page listener may have missed
   if (currentPage.isClosed()) {
     if (!intentionalClose) {
       browserClosed = true;
-      emit('interruption', { reason: 'Browser closed — click Restart to reopen', level: 'error', ui: { status: 'STOPPED', label: 'Browser Closed', title: 'Click Restart to reopen' } });
+      autoRestartAttempts = 0;
+      lastAutoRestartAt = 0;
+      emit('interruption', { reason: 'Browser closed — attempting restart…', level: 'error', ui: { status: 'STOPPED', label: 'Browser Closed', title: 'Restarting…' } });
       currentPage = null;
       playDurationSeconds = null;
     }
@@ -678,11 +793,21 @@ async function recoverBrowser() {
     if (userBrowser === 'firefox' || userBrowser === 'safari') {
       await startBrowser();
     } else {
-      // Chrome: ask main process to relaunch, then reconnect via CDP
+      // Chrome: tell index.js to relaunch Chrome with the same --user-data-dir.
+      // Then reconnect via CDP and inject the saved Spotify session so the user
+      // doesn't need to log in again even if the profile cookies were lost.
       emit('need-browser-relaunch', {});
-      await delay(6000);
+      await delay(6000); // wait for Chrome to fully start
+      console.log('[RECOVER] Connecting via CDP...');
       const browser = await chromium.connectOverCDP('http://localhost:9222');
-      context = browser.contexts()[0];
+      const contexts = browser.contexts();
+      console.log(`[RECOVER] CDP connected — contexts=${contexts.length}`);
+      context = contexts[0];
+      if (!context) throw new Error('No browser context available after CDP connect');
+      const pages = context.pages();
+      console.log(`[RECOVER] Context pages=${pages.length} urls=${pages.map(p => p.url()).join(', ')}`);
+      await restoreSession();   // inject saved cookies immediately into the context
+      needsSessionRestore = true; // flag playSpotify() to inject localStorage too
     }
     console.log('Browser recovered');
     emit('interruption', { clear: true });
@@ -692,6 +817,139 @@ async function recoverBrowser() {
     emit('interruption', { reason: 'Could not reopen browser — please restart the app' });
     return false;
   }
+}
+
+// Called after repeated browser-restart failures. API endpoint to be provided.
+async function notifyBrowserRestartFailed() {
+  console.log('[TODO] notifyBrowserRestartFailed — API endpoint not yet configured');
+  // TODO: replace with real API call when endpoint is provided
+  // e.g. await fetch('https://...', { method: 'POST', body: JSON.stringify({ email: userEmail }) });
+}
+
+async function notifyPlaybackPauseFailed() {
+  try {
+    console.log(
+      '[TODO] notifyPlaybackPauseFailed API'
+    );
+
+    // API will be added later
+
+    /*
+    await fetch(`${API_BASE}YOUR_ENDPOINT`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        playlist_id: currentPlaylist?.id,
+        reason: 'playback_paused'
+      })
+    });
+    */
+
+  } catch (e) {
+    console.log(
+      'notifyPlaybackPauseFailed:',
+      e.message
+    );
+  }
+}
+
+async function restoreOriginalPlaylist() {
+    if (
+        !currentPlaylist?.spotify_url ||
+        !currentPage ||
+        currentPage.isClosed()
+    ) {
+        return false;
+    }
+
+    const origUrl = currentPlaylist.spotify_url;
+
+    try {
+        navigatingBack = true;
+        lastKnownUrl = origUrl;
+
+        await currentPage.goto(origUrl, {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000
+        });
+
+        await currentPage.bringToFront();
+
+        const playBtn = currentPage.locator(
+            '[data-testid="action-bar-row"] button[data-testid="play-button"]'
+        ).first();
+
+        await playBtn.waitFor({
+            state: 'visible',
+            timeout: 10000
+        });
+
+        await playBtn.click({
+            force: true,
+            timeout: 5000
+        });
+
+        const playing = await waitForPlaybackStart(
+            currentPage,
+            8000
+        );
+
+        if (playing) {
+            lastKnownPlaying = true;
+            return true;
+        }
+
+        return false;
+
+    } catch (e) {
+        console.log(
+            'restoreOriginalPlaylist:',
+            e.message
+        );
+        return false;
+    } finally {
+        navigatingBack = false;
+    }
+}
+
+async function tryAutoResumePlayback() {
+
+    for (let i = 1; i <= 2; i++) {
+
+        console.log(
+            `[AUTO RECOVERY] Attempt ${i}/2`
+        );
+
+        const restored =
+            await restoreOriginalPlaylist();
+
+        if (restored) {
+
+            if (pausedAt) {
+                pausedAccumulatedMs +=
+                    Date.now() - pausedAt;
+                pausedAt = null;
+            }
+
+            isPaused = false;
+            browserPauseInterrupted = false;
+            manualNavInterrupted = false;
+
+            emit('interruption', { clear: true });
+            emit('playback-changed', {
+                playing: true
+            });
+
+            return true;
+        }
+
+        await delay(3000);
+    }
+
+    return false;
 }
 
 async function runLoop() {
@@ -754,16 +1012,33 @@ async function runLoop() {
           console.log('Browser playback changed:', nowPlaying ? 'playing' : 'paused');
 
           if (!nowPlaying && !isPaused) {
-            // Browser-initiated pause — show message in app (no beep)
+
             isPaused = true;
             pausedAt = Date.now();
             browserPauseInterrupted = true;
-            emit('interruption', {
-              reason: 'Playback paused — press Play to resume',
-              notify: false,
-              ui: { status: 'PAUSED', label: 'PAUSED', title: currentPlaylist?.title || '—' }
-            });
-          } else if (nowPlaying && isPaused) {
+
+            console.log(
+              '[PLAYBACK PAUSED] Trying automatic recovery...'
+            );
+
+            const resumed = await tryAutoResumePlayback();
+
+            if (!resumed) {
+
+                emit('interruption', {
+                    reason: 'Playback paused — automatic recovery failed',
+                    level: 'error',
+                    notify: true,
+                    ui: {
+                        status: 'PAUSED',
+                        label: 'PAUSED',
+                        title: currentPlaylist?.title || '—'
+                    }
+                });
+
+                await notifyPlaybackPauseFailed();
+            }
+        } else if (nowPlaying && isPaused) {
             if (pausedAt) pausedAccumulatedMs += Date.now() - pausedAt;
             pausedAt = null;
             isPaused = false;
@@ -775,6 +1050,93 @@ async function runLoop() {
           }
         }
         if (nowPlaying !== null) lastKnownPlaying = nowPlaying;
+      }
+
+      // Detect recommendation / off-playlist songs
+      if (!isPaused && !navigatingBack && !manualNavInterrupted &&
+          currentPage && !currentPage.isClosed() && playDurationSeconds) {
+        const check = await currentPage.evaluate(() => {
+          // Is Spotify playing?
+          const playPauseBtn = document.querySelector('[data-testid="control-button-playpause"]');
+          if (!playPauseBtn) return null;
+          const isPlaying = (playPauseBtn.getAttribute('aria-label') || '').toLowerCase().includes('pause');
+
+          // The mini player links to the album, not the track directly.
+          // The "context-link" element has the track URI embedded as a query param:
+          // href="/album/ID?uid=...&uri=spotify%3Atrack%3ATRACK_ID"
+          const contextLink = document.querySelector('a[data-testid="context-link"]');
+          const contextHref = contextLink ? (contextLink.getAttribute('href') || '') : '';
+          const uriMatch = contextHref.match(/uri=spotify(?:%3A|:)track(?:%3A|:)([^&]+)/i);
+          const miniId = uriMatch ? uriMatch[1] : null;
+
+          // Check if the currently playing track appears in the main playlist (not recommendations).
+          // Spotify always scrolls the playing row into view so it will be in the DOM.
+          const isInPlaylist = miniId
+            ? !!Array.from(document.querySelectorAll('a[data-testid="internal-track-link"]'))
+                .find(a =>
+                  !a.closest('[data-testid="recommended-track"]') &&
+                  (a.getAttribute('href') || '').includes(miniId)
+                )
+            : null;
+
+          return { isPlaying, miniId, isInPlaylist };
+        }).catch(() => null);
+
+        if (check) {
+          if (!check.isPlaying) {
+            offPlaylistCount = 0;
+          } else if (check.isInPlaylist === true) {
+            if (check.miniId) playlistTrackIds.add(check.miniId);
+            offPlaylistCount = 0;
+            if (offPlaylistWarned) { offPlaylistWarned = false; emit('interruption', { clear: true }); }
+          } else if (check.isInPlaylist === false) {
+            offPlaylistCount++;
+            if (offPlaylistCount >= 3 && !offPlaylistWarned) {
+              offPlaylistWarned = true;
+              emit('interruption', {
+                reason: 'Recommendation detected — returning to your playlist...'
+              });
+              console.log('Off-playlist detected — auto-resuming playlist');
+
+              const resumeUrl = currentPlaylist?.spotify_url;
+              if (resumeUrl && currentPage && !currentPage.isClosed()) {
+                navigatingBack = true;
+                lastKnownUrl = resumeUrl;
+                try {
+                  await currentPage.goto(resumeUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                  await currentPage.bringToFront();
+                  const mainPlayBtn = currentPage.locator(
+                    '[data-testid="action-bar-row"] button[data-testid="play-button"]'
+                  ).first();
+                  await mainPlayBtn.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
+                  await mainPlayBtn.click({ force: true, timeout: 5000 }).catch(() => {});
+                  const playing = await waitForPlaybackStart(currentPage, 8000);
+                  lastKnownPlaying = playing;
+                  if (playing) {
+                    offPlaylistWarned = false;
+                    offPlaylistCount = 0;
+                    const ids = await currentPage.evaluate(() =>
+                      Array.from(document.querySelectorAll('a[data-testid="internal-track-link"]'))
+                        .filter(a => !a.closest('[data-testid="recommended-track"]'))
+                        .map(a => { const m = (a.getAttribute('href') || '').match(/\/track\/([^/?]+)/); return m ? m[1] : null; })
+                        .filter(Boolean)
+                    ).catch(() => []);
+                    ids.forEach(id => playlistTrackIds.add(id));
+                    emit('interruption', { clear: true });
+                    console.log('Auto-resumed playlist successfully');
+                  } else {
+                    emit('interruption', { reason: 'Recommendation detected — could not return to playlist, press Play' });
+                  }
+                } catch (e) {
+                  console.log('Auto-resume failed:', e.message);
+                  emit('interruption', { reason: 'Recommendation detected — could not return to playlist, press Play' });
+                } finally {
+                  navigatingBack = false;
+                }
+              }
+            }
+          }
+        }
       }
 
       // Duration check — exclude manual pause time AND ongoing interrupt time
@@ -789,23 +1151,68 @@ async function runLoop() {
 
       // Start next playlist when nothing is playing
       if (!currentPage) {
-        // Wait for user to click Restart if browser was closed externally
         if (browserClosed) {
-          await delay(2000);
-          continue;
+          // After 2 failed attempts: call API, show message, wait for manual restart
+          if (autoRestartAttempts >= 2) {
+            await delay(2000);
+            continue;
+          }
+          // Mirror exactly what the manual Restart button does — try every 5 s
+          const now = Date.now();
+          if (now - lastAutoRestartAt >= 5000) {
+            lastAutoRestartAt = now;
+            autoRestartAttempts++; // count this attempt (limit applies to Chrome-alive AND Chrome-dead paths)
+            console.log(`Auto-restart attempt ${autoRestartAttempts}/2...`);
+            browserClosed = false;
+            nextPlaylist = currentPlaylist || nextPlaylist;
+            if (!nextPlaylist) firstFetch = true;
+            playbackStopped = false;
+            offlineReported = false;
+            interruptStartTime = null;
+            isPaused = false;
+            pausedAt = null;
+            pausedAccumulatedMs = 0;
+            if (currentPage) {
+              currentPage.goto('about:blank', { timeout: 5000 }).catch(() => {});
+              currentPage = null;
+            }
+            currentPlaylist = null;
+            playStartTime = null;
+            playDurationSeconds = null;
+          } else {
+            await delay(1000);
+            continue;
+          }
         }
 
         pausedAccumulatedMs = 0;
         isPaused = false;
         pausedAt = null;
 
-        // Recover browser if it was closed
+        // Recover browser if the process/context is dead
         if (!isBrowserAlive()) {
+          console.log('[RECOVER] Browser not alive — context:', !!context, '— calling recoverBrowser()');
           const recovered = await recoverBrowser();
           if (!recovered) {
-            await delay(10000);
+            // autoRestartAttempts was already incremented in the auto-restart block above.
+            // Check the limit here to decide whether to show the final error.
+            if (autoRestartAttempts >= 2) {
+              // Both attempts exhausted — call API and show final message
+              await notifyBrowserRestartFailed();
+              emit('interruption', {
+                reason: 'Browser could not restart — please restart the app manually',
+                level: 'error',
+                ui: { status: 'STOPPED', label: 'Restart Required', title: 'Press Restart to continue' }
+              });
+              browserClosed = true; // stay stopped — manual Restart button resets autoRestartAttempts
+            } else {
+              // First failure — retry once more after 5 s
+              browserClosed = true;
+            }
+            await delay(5000);
             continue;
           }
+          autoRestartAttempts = 0;
         }
 
         const task = await fetchTask();
@@ -937,6 +1344,9 @@ async function runLoop() {
       if (msg.type === 'restart-playback') {
         console.log('Restart playback signal received');
         browserClosed = false;
+        autoRestartAttempts = 0;
+        lastAutoRestartAt = 0;
+        needsSessionRestore = false;
         // Preserve the current playlist — queue it as next so fetchTask reuses it without API call
         nextPlaylist = currentPlaylist || nextPlaylist;
         if (!nextPlaylist) firstFetch = true; // nothing to reuse — allow fresh fetch

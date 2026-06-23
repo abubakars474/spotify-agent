@@ -42,6 +42,9 @@ function getChromePath() {
   throw new Error('Chrome not found on Linux');
 }
 
+// Permanent Chrome profile — stored in home dir so it survives reboots and /tmp cleanup.
+const chromeUserDataDir = path.join(os.homedir(), '.spotify-agent-chrome-profile');
+
 function launchChromeWithCDP() {
   if (chromeProcess) return;
 
@@ -51,13 +54,9 @@ function launchChromeWithCDP() {
   // Close it first so we always end up with a single fresh window.
   stopChrome();
 
-  const userDataDir = os.platform() === 'win32'
-    ? 'C:\\temp\\spotify-agent-profile'
-    : '/tmp/spotify-electron-profile';
-
   chromeProcess = spawn(getChromePath(), [
     '--remote-debugging-port=9222',
-    `--user-data-dir=${userDataDir}`,
+    `--user-data-dir=${chromeUserDataDir}`,
     '--new-window',
     '--no-first-run',
     '--no-default-browser-check',
@@ -68,9 +67,7 @@ function launchChromeWithCDP() {
 }
 
 function stopChrome() {
-  const userDataDir = os.platform() === 'win32'
-    ? 'C:\\temp\\spotify-agent-profile'
-    : '/tmp/spotify-electron-profile';
+  const userDataDir = chromeUserDataDir;
 
   try {
     if (process.platform === 'win32') {
