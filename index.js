@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, utilityProcess, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, utilityProcess, Notification, powerSaveBlocker } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -306,5 +306,11 @@ ipcMain.on('reset', () => {
 app.setName('Myspotify Agent');
 app.setAppUserModelId('com.spotify.ai');
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  // Prevent display sleep and screen lock on both macOS and Windows.
+  // Without this, Chrome fires the Page Visibility API when the screen locks
+  // and Spotify auto-pauses playback.
+  powerSaveBlocker.start('prevent-display-sleep');
+  createWindow();
+});
 app.on('window-all-closed', () => { stopSystem(); app.quit(); });
