@@ -37,6 +37,7 @@ let needsSessionRestore = false; // true after browser fully dies and is recreat
 let lastKnownPlaying = null;   // null = unknown, true = playing, false = paused
 let lastKnownUrl = null;
 let manualNavInterrupted = false;   // true when user manually changed playlist in browser
+let manualNavAttempts = 0;          // consecutive auto-return attempts after manual nav
 let navigatingBack = false;         // true while we are restoring the original playlist
 let browserPauseInterrupted = false; // true when browser-tab pause triggered an app message
 let playlistTrackIds = new Set();   // track IDs from the current playlist (excludes recommendations)
@@ -952,6 +953,77 @@ async function tryAutoResumePlayback() {
     return false;
 }
 
+// Auto-return to the assigned playlist after the user manually navigates away.
+// Tries up to 2 times; on total failure shows a message and calls the API placeholder.
+async function autoReturnToPlaylist() {
+  if (!currentPlaylist?.spotify_url || !currentPage || currentPage.isClosed()) return;
+
+  const origUrl = currentPlaylist.spotify_url;
+  navigatingBack = true;
+  manualNavInterrupted = true;
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    manualNavAttempts = attempt;
+    console.log(`[MANUAL NAV] Auto-return attempt ${attempt}/2 to ${origUrl}`);
+    emit('interruption', {
+      reason: `Playlist changed — returning to your playlist (${attempt}/2)…`,
+      ui: { status: 'RUNNING', label: 'RETURNING', title: currentPlaylist.title }
+    });
+
+    try {
+      lastKnownUrl = origUrl; // pre-set so detection won't re-fire
+      await currentPage.goto(origUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await currentPage.bringToFront();
+      const mainPlayBtn = currentPage.locator(
+        '[data-testid="action-bar-row"] button[data-testid="play-button"]'
+      ).first();
+      await mainPlayBtn.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
+      await mainPlayBtn.click({ force: true, timeout: 5000 }).catch(() => {});
+      const playing = await waitForPlaybackStart(currentPage, 8000);
+
+      if (playing) {
+        console.log(`[MANUAL NAV] Auto-return succeeded on attempt ${attempt}`);
+        manualNavInterrupted = false;
+        manualNavAttempts = 0;
+        navigatingBack = false;
+        lastKnownPlaying = true;
+        if (isPaused && pausedAt) { pausedAccumulatedMs += Date.now() - pausedAt; pausedAt = null; }
+        isPaused = false;
+        emit('interruption', { clear: true });
+        emit('playback-changed', { playing: true });
+        return;
+      }
+    } catch (e) {
+      console.log(`[MANUAL NAV] Attempt ${attempt} error:`, e.message);
+    }
+
+    console.log(`[MANUAL NAV] Attempt ${attempt} failed`);
+    if (attempt < 2) {
+      emit('interruption', {
+        reason: `Could not return to playlist (${attempt}/2) — retrying…`,
+        ui: { status: 'PAUSED', label: 'PAUSED', title: currentPlaylist.title }
+      });
+      await delay(3000);
+    }
+  }
+
+  // Both attempts failed
+  console.log('[MANUAL NAV] Auto-return failed after 2 attempts');
+  await notifyManualNavFailed();
+  if (!isPaused) { isPaused = true; pausedAt = Date.now(); }
+  emit('interruption', {
+    reason: 'Could not return to playlist after 2 attempts — press Play to retry',
+    ui: { status: 'PAUSED', label: 'PAUSED', title: currentPlaylist.title }
+  });
+  emit('playback-changed', { playing: false });
+  navigatingBack = false;
+}
+
+async function notifyManualNavFailed() {
+  console.log('[TODO] notifyManualNavFailed — API endpoint not yet configured');
+  // TODO: replace with real API call when endpoint is provided
+}
+
 async function runLoop() {
   while (true) {
     try {
@@ -980,22 +1052,9 @@ async function runLoop() {
             currentUrl.includes('open.spotify.com') &&
             !currentUrl.includes('about:blank')) {
           lastKnownUrl = currentUrl;
-
-          // Pause the app timer and actual Spotify audio
-          if (!isPaused) {
-            isPaused = true;
-            pausedAt = Date.now();
-          }
           lastKnownPlaying = false;
-          manualNavInterrupted = true;
-          await setSpotifyPlayback('pause').catch(() => {});
-
-          emit('interruption', {
-            reason: 'Playlist changed manually in browser — press Play to resume',
-            ui: { status: 'PAUSED', label: 'PAUSED', title: currentPlaylist?.title || '—' }
-          });
-          emit('playback-changed', { playing: false });
-          console.log('Manual navigation detected — kept original title:', currentPlaylist?.title);
+          console.log('Manual navigation detected — auto-returning to:', currentPlaylist?.title);
+          await autoReturnToPlaylist();
         }
       }
 
