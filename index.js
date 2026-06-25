@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain, utilityProcess, Notification, powerSaveBlocker } = require('electron');
 const { spawn } = require('child_process');
+const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -16,6 +17,7 @@ let userEmail    = null;
 let userPassword = null;
 
 let isResetting = false;
+let autoRetryEnabled = true;
 
 
 const API_BASE = 'https://myspotify.anvs.xyz/api/v1/';
@@ -138,6 +140,24 @@ ipcMain.handle('login', async (_e, { email, password }) => {
   }
 });
 
+// Check whether the user is logged into Spotify by inspecting the sp_dc session
+// cookie in the Chrome browser that was launched via Open Browser.
+ipcMain.handle('check-spotify-login', async () => {
+  try {
+    const browser = await chromium.connectOverCDP('http://localhost:9222');
+    const context = browser.contexts()[0];
+    if (!context) return { loggedIn: false, reason: 'No browser context found' };
+    const cookies = await context.cookies('https://open.spotify.com');
+    const spDc = cookies.find(c => c.name === 'sp_dc');
+    // connectOverCDP: close() only disconnects the CDP session, it does NOT kill Chrome.
+    await browser.close();
+    if (spDc) return { loggedIn: true };
+    return { loggedIn: false, reason: 'Not logged into Spotify' };
+  } catch (e) {
+    return { loggedIn: false, browserNotOpen: true };
+  }
+});
+
 ipcMain.handle('reset-playlists', async () => {
   if (!authToken) {
     throw new Error('Not logged in');
@@ -189,14 +209,15 @@ function startWorker() {
   workerProcess = utilityProcess.fork(workerPath);
 
   workerProcess.postMessage({
-    type: 'config',
-    duration: userDuration,
-    browser:  userBrowser,
-    apiBase:  API_BASE,
-    token:    authToken,
-    email:    userEmail,
-    password: userPassword,
-    mode:     'start-now'
+    type:      'config',
+    duration:  userDuration,
+    browser:   userBrowser,
+    apiBase:   API_BASE,
+    token:     authToken,
+    email:     userEmail,
+    password:  userPassword,
+    autoRetry: autoRetryEnabled,
+    mode:      'start-now'
   });
 
   workerProcess.on('message', (msg) => {
@@ -247,11 +268,12 @@ ipcMain.on('open-browser', (_e, browser) => {
   if (userBrowser === 'chrome') launchChromeWithCDP();
 });
 
-ipcMain.on('start', (_e, _data) => {
+ipcMain.on('start', (_e, data) => {
   if (!authToken) {
     console.log('Start blocked: not logged in');
     return;
   }
+  autoRetryEnabled = data?.autoRetry !== false;
   startWorker();
 });
 
@@ -266,6 +288,11 @@ ipcMain.on('restart', () => {
   // Don't relaunch Chrome here — if it's still open the worker reuses the existing tab.
   // If it was closed externally, the worker's recoverBrowser() emits need-browser-relaunch
   // which triggers launchChromeWithCDP() through the normal recovery path.
+});
+
+ipcMain.on('set-auto-retry', (_e, data) => {
+  autoRetryEnabled = data?.autoRetry === true;
+  if (workerProcess) workerProcess.postMessage({ type: 'set-auto-retry', autoRetry: autoRetryEnabled });
 });
 
 ipcMain.on('show-notification', (_e, { title, body }) => {
@@ -307,9 +334,6 @@ app.setName('Myspotify Agent');
 app.setAppUserModelId('com.spotify.ai');
 
 app.whenReady().then(() => {
-  // Prevent display sleep and screen lock on both macOS and Windows.
-  // Without this, Chrome fires the Page Visibility API when the screen locks
-  // and Spotify auto-pauses playback.
   powerSaveBlocker.start('prevent-display-sleep');
   createWindow();
 });

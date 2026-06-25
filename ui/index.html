@@ -134,6 +134,19 @@
 
     .divider { width: 100%; height: 1px; background: var(--border); margin: 18px 0; }
 
+    .checkbox-row {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 18px; -webkit-app-region: no-drag;
+    }
+    .checkbox-row input[type="checkbox"] {
+      width: 16px; height: 16px; accent-color: var(--green-dim);
+      cursor: pointer; flex-shrink: 0;
+    }
+    .checkbox-row label {
+      font-size: 12px; color: var(--muted);
+      letter-spacing: .06em; cursor: pointer; user-select: none;
+    }
+
     .view { -webkit-app-region: no-drag; }
     .view.hidden { display: none; }
 
@@ -294,8 +307,11 @@
     <!-- VIEW 3a: Configure (Start) -->
     <div id="viewConfigure" class="view hidden">
       <div class="controls" style="margin-top: 30px;">
-        <button class="btn btn-primary" id="btnStart" onclick="start()">Start</button>
+        <button class="btn btn-primary" id="btnStart" onclick="start()" disabled>Start</button>
         <button class="btn btn-reset" onclick="resetApp()">Logout</button>
+      </div>
+      <div id="spotifyLoginMsg" class="interrupt-bar error hidden" style="margin-top:16px;">
+        ✕ Not logged into Spotify — please login in the browser window
       </div>
     </div>
 
@@ -318,10 +334,14 @@
         <button class="btn btn-reset" id="btnResetPlaylists" onclick="restartPlayback()">Restart</button>
         <button class="btn btn-reset" onclick="resetApp()">Logout</button>
       </div>
+      <div class="checkbox-row" style="margin-top: 16px;">
+        <input type="checkbox" id="chkAutoRetry" onchange="toggleAutoRetry(this.checked)">
+        <label for="chkAutoRetry">Enable automatic recovery on failure</label>
+      </div>
       <div id="interruptBar" class="interrupt-bar hidden"></div>
     </div>
 
-    <div style="position:fixed; bottom:12px; right:18px; font-size:11px; font-family:'DM Mono',monospace; color:#888; letter-spacing:.06em; z-index:999; -webkit-app-region:no-drag;">v1.1.3</div>
+    <div style="position:fixed; bottom:12px; right:18px; font-size:11px; font-family:'DM Mono',monospace; color:#888; letter-spacing:.06em; z-index:999; -webkit-app-region:no-drag;">v1.1.4</div>
 
   </div>
 
@@ -379,6 +399,7 @@
 
     // Track the currently playing playlist title so Pause/Play can preserve it
     let currentPlaylistTitle = null;
+    let isLoggedIn = false;
 
     // ---- Restore saved credentials ----
     const savedEmail    = localStorage.getItem('savedEmail');
@@ -407,6 +428,56 @@
     function showView(name) {
       ['viewInitial', 'viewLogin', 'viewConfigure', 'viewRunning'].forEach(id =>
         document.getElementById(id).classList.toggle('hidden', id !== name));
+      if (name === 'viewConfigure') {
+        updateStartButton();
+        startSpotifyLoginPoller();
+      } else {
+        stopSpotifyLoginPoller();
+      }
+    }
+
+    let spotifyCheckInterval = null;
+
+    async function updateStartButton() {
+      const btn = document.getElementById('btnStart');
+      const msg = document.getElementById('spotifyLoginMsg');
+      if (!isLoggedIn) {
+        btn.disabled = true;
+        msg.classList.remove('hidden');
+        return;
+      }
+      try {
+        const check = await ipcRenderer.invoke('check-spotify-login');
+        if (check.loggedIn) {
+          btn.disabled = false;
+          btn.textContent = 'Start';
+          msg.classList.add('hidden');
+          stopSpotifyLoginPoller(); // logged in — no need to keep polling
+        } else if (check.browserNotOpen) {
+          // Chrome is closed — don't show Spotify login error, just keep Start disabled
+          btn.disabled = true;
+          btn.textContent = 'Start';
+          msg.classList.add('hidden');
+        } else {
+          // Chrome is open but user is not logged into Spotify
+          btn.disabled = true;
+          btn.textContent = 'Start';
+          msg.classList.remove('hidden');
+        }
+      } catch (_) {
+        btn.disabled = true;
+        btn.textContent = 'Start';
+        msg.classList.add('hidden');
+      }
+    }
+
+    function startSpotifyLoginPoller() {
+      stopSpotifyLoginPoller();
+      spotifyCheckInterval = setInterval(updateStartButton, 5000);
+    }
+
+    function stopSpotifyLoginPoller() {
+      if (spotifyCheckInterval) { clearInterval(spotifyCheckInterval); spotifyCheckInterval = null; }
     }
 
     function setStatus(mode, label) {
@@ -453,7 +524,8 @@
         if (result.success) {
           localStorage.setItem('savedEmail', email);
           localStorage.setItem('savedPassword', password);
-          showView('viewConfigure');
+          isLoggedIn = true;
+          showView('viewConfigure'); // triggers updateStartButton() which checks Spotify
           setStatus('idle', 'READY');
           setMessage('Ready', 'Press Start to begin');
         } else {
@@ -468,9 +540,14 @@
       }
     }
 
+    function toggleAutoRetry(enabled) {
+      ipcRenderer.send('set-auto-retry', { autoRetry: enabled });
+    }
+
     function start() {
       clearInterruption();
-      ipcRenderer.send('start', {});
+      const autoRetry = document.getElementById('chkAutoRetry').checked;
+      ipcRenderer.send('start', { autoRetry });
       setStatus('running', 'RUNNING');
       setMessage('Starting', 'Loading your playlists…');
       showView('viewRunning');
@@ -540,8 +617,11 @@
       ipcRenderer.send('reset');
       document.getElementById('loginEmail').value = localStorage.getItem('savedEmail') || '';
       document.getElementById('loginPassword').value = localStorage.getItem('savedPassword') || '';
+      document.getElementById('chkAutoRetry').checked = false;
       loginError.textContent = '';
       currentPlaylistTitle = null;
+      isLoggedIn = false;
+      stopSpotifyLoginPoller();
       setStatus('idle', 'IDLE');
       setMessage('Welcome', 'Open browser to begin');
       showView('viewInitial');
@@ -570,7 +650,7 @@
         }
         if (data.level === 'error') {
           btnPause.disabled = true;
-          btnPlay.disabled = true;
+          btnPlay.disabled = !data.allowPlay;
         }
       }
     });

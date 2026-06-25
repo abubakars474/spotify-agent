@@ -16,6 +16,7 @@ let currentTaskId = null;
 let playStartTime = null;
 let currentDuration = 10;
 let userEmail = null;
+let autoRetryEnabled = true;
 let playDurationSeconds = null;
 let currentPlaylist = null;
 let nextPlaylist = null;
@@ -36,10 +37,12 @@ let lastAutoRestartAt = 0;     // timestamp of last auto-restart attempt
 let needsSessionRestore = false; // true after browser fully dies and is recreated
 let lastKnownPlaying = null;   // null = unknown, true = playing, false = paused
 let lastKnownUrl = null;
+let navCooldownUntil = 0;           // timestamp — ignore URL changes until this time (post-auto-return)
 let manualNavInterrupted = false;   // true when user manually changed playlist in browser
 let manualNavAttempts = 0;          // consecutive auto-return attempts after manual nav
 let navigatingBack = false;         // true while we are restoring the original playlist
 let browserPauseInterrupted = false; // true when browser-tab pause triggered an app message
+let logoutDetected = false;          // true when Spotify logout is detected; suppresses false-positive play events
 let playlistTrackIds = new Set();   // track IDs from the current playlist (excludes recommendations)
 let offPlaylistCount = 0;           // consecutive polls detecting an off-playlist / recommendation song
 let offPlaylistWarned = false;      // true while the off-playlist warning is showing
@@ -451,6 +454,7 @@ async function waitForPlaybackStart(page, timeoutMs = 10000) {
 }
 
 async function playSpotify(url, duration = 10, browserName) {
+  logoutDetected = false; // new playlist starting — clear logout gate
   // Reset off-playlist state for the incoming playlist
   playlistTrackIds = new Set();
   offPlaylistCount = 0;
@@ -481,7 +485,11 @@ async function playSpotify(url, duration = 10, browserName) {
       browserClosed = true;
       autoRestartAttempts = 0;
       lastAutoRestartAt = 0;
-      emit('interruption', { reason: 'Browser crashed — attempting restart…', level: 'error', ui: { status: 'STOPPED', label: 'Browser Crashed', title: 'Restarting…' } });
+      emit('interruption', {
+        reason: autoRetryEnabled ? 'Browser crashed — attempting restart…' : 'Browser crashed — press Restart to continue',
+        level: 'error',
+        ui: { status: 'STOPPED', label: 'Browser Crashed', title: autoRetryEnabled ? 'Restarting…' : 'Press Restart' }
+      });
       currentPage = null;
       playDurationSeconds = null;
     });
@@ -492,7 +500,11 @@ async function playSpotify(url, duration = 10, browserName) {
         browserClosed = true;
         autoRestartAttempts = 0;
         lastAutoRestartAt = 0;
-        emit('interruption', { reason: 'Browser closed — attempting restart…', level: 'error', ui: { status: 'STOPPED', label: 'Browser Closed', title: 'Restarting…' } });
+        emit('interruption', {
+          reason: autoRetryEnabled ? 'Browser closed — attempting restart…' : 'Browser closed — press Restart to continue',
+          level: 'error',
+          ui: { status: 'STOPPED', label: 'Browser Closed', title: autoRetryEnabled ? 'Restarting…' : 'Press Restart' }
+        });
         currentPage = null;
         playDurationSeconds = null;
       }
@@ -603,6 +615,8 @@ async function playSpotify(url, duration = 10, browserName) {
     console.log('✓ Playback confirmed');
     emit('interruption', { clear: true });
     saveSession(); // persist cookies + localStorage while we know the user is logged in
+    navCooldownUntil = Date.now() + 5000; // ignore URL changes for 5s after initial load
+    await updateAgentStatus(1);
   } else {
     console.log('⚠ Could not confirm playback');
     emit('interruption', { reason: 'Playback did not start — Spotify login, DRM, or region issue' });
@@ -665,6 +679,7 @@ async function stopPlayback() {
   playDurationSeconds = null;
   lastKnownPlaying = null;
   lastKnownUrl = null;
+  navCooldownUntil = 0;
   playlistTrackIds = new Set();
   offPlaylistCount = 0;
   offPlaylistWarned = false;
@@ -673,7 +688,6 @@ async function stopPlayback() {
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
 const SESSION_FILE = path.join(os.homedir(), '.spotify-agent-session.json');
-let lastSessionSaveAt = 0;
 
 // Persist Spotify cookies + localStorage to disk so they survive a full browser restart.
 // For Firefox/Safari, launchPersistentContext already handles this in the profile dir.
@@ -686,7 +700,6 @@ async function saveSession() {
     const lsItems = state.origins?.find(o => o.origin === 'https://open.spotify.com')?.localStorage?.length ?? 0;
     console.log(`[SESSION SAVE] cookies=${state.cookies?.length ?? 0} sp_dc=${spCookie ? 'YES' : 'NO'} localStorage=${lsItems} → ${SESSION_FILE}`);
     fs.writeFileSync(SESSION_FILE, JSON.stringify(state));
-    lastSessionSaveAt = Date.now();
   } catch (e) {
     console.log('[SESSION SAVE] failed:', e.message);
   }
@@ -712,18 +725,17 @@ async function restoreSession() {
 async function checkPageHealth() {
   if (!currentPage || isPaused) return;
 
-  // Periodically save Spotify session so it survives a full browser restart
-  if (Date.now() - lastSessionSaveAt >= 60000) {
-    await saveSession();
-  }
-
   // Safety net: catch close events the page listener may have missed
   if (currentPage.isClosed()) {
     if (!intentionalClose) {
       browserClosed = true;
       autoRestartAttempts = 0;
       lastAutoRestartAt = 0;
-      emit('interruption', { reason: 'Browser closed — attempting restart…', level: 'error', ui: { status: 'STOPPED', label: 'Browser Closed', title: 'Restarting…' } });
+      emit('interruption', {
+        reason: autoRetryEnabled ? 'Browser closed — attempting restart…' : 'Browser closed — press Restart to continue',
+        level: 'error',
+        ui: { status: 'STOPPED', label: 'Browser Closed', title: autoRetryEnabled ? 'Restarting…' : 'Press Restart' }
+      });
       currentPage = null;
       playDurationSeconds = null;
     }
@@ -820,11 +832,26 @@ async function recoverBrowser() {
   }
 }
 
-// Called after repeated browser-restart failures. API endpoint to be provided.
+async function updateAgentStatus(status) {
+  try {
+    if (!authToken) await apiLogin();
+    const form = new FormData();
+    form.append('agent_status', String(status));
+    const res = await fetch(`${API_BASE}update-agent-status`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${authToken}` },
+      body: form
+    });
+    if (res.status === 401) { authToken = null; await apiLogin(); return updateAgentStatus(status); }
+    console.log(`[STATUS] update-agent-status(${status}) →`, res.status);
+  } catch (e) {
+    console.log(`[STATUS] update-agent-status(${status}) failed:`, e.message);
+  }
+}
+
+// Called after repeated browser-restart failures.
 async function notifyBrowserRestartFailed() {
-  console.log('[TODO] notifyBrowserRestartFailed — API endpoint not yet configured');
-  // TODO: replace with real API call when endpoint is provided
-  // e.g. await fetch('https://...', { method: 'POST', body: JSON.stringify({ email: userEmail }) });
+  await updateAgentStatus(3);
 }
 
 async function notifyPlaybackPauseFailed() {
@@ -877,6 +904,7 @@ async function restoreOriginalPlaylist() {
             timeout: 30000
         });
 
+        navCooldownUntil = Date.now() + 5000;
         await currentPage.bringToFront();
 
         const playBtn = currentPage.locator(
@@ -917,6 +945,20 @@ async function restoreOriginalPlaylist() {
 }
 
 async function tryAutoResumePlayback() {
+    if (!autoRetryEnabled) return false;
+
+    // Abort if user is not logged into Spotify (sp_dc cookie gone)
+    if (context) {
+        try {
+            const cookies = await context.cookies('https://open.spotify.com');
+            if (!cookies.find(c => c.name === 'sp_dc')) {
+                console.log('[AUTO RECOVERY] Spotify not logged in — aborting');
+                return false;
+            }
+        } catch (e) {
+            console.log('[AUTO RECOVERY] Login check error:', e.message);
+        }
+    }
 
     for (let i = 1; i <= 2; i++) {
 
@@ -940,11 +982,27 @@ async function tryAutoResumePlayback() {
             manualNavInterrupted = false;
 
             emit('interruption', { clear: true });
-            emit('playback-changed', {
-                playing: true
-            });
+            emit('playback-changed', { playing: true });
+            await updateAgentStatus(1);
 
             return true;
+        }
+
+        // If redirected to Spotify login, user logged out — no point retrying
+        if (currentPage && !currentPage.isClosed()) {
+            const url = currentPage.url();
+            if (url.includes('accounts.spotify.com') || url.includes('/login') || url.includes('/signup')) {
+                lastKnownUrl = url; // prevent URL detector from re-firing
+                logoutDetected = true;
+                emit('playback-changed', { playing: false });
+                emit('interruption', {
+                    reason: 'Not logged into Spotify — please login in the browser and click Play',
+                    level: 'error',
+                    allowPlay: true,
+                    ui: { status: 'PAUSED', label: 'LOGIN REQUIRED', title: 'Login to Spotify' }
+                });
+                return false;
+            }
         }
 
         await delay(3000);
@@ -958,11 +1016,36 @@ async function tryAutoResumePlayback() {
 async function autoReturnToPlaylist() {
   if (!currentPlaylist?.spotify_url || !currentPage || currentPage.isClosed()) return;
 
+  // Check Spotify login via sp_dc cookie before any navigation.
+  // Logout lands on open.spotify.com (not /login), so URL-based detection misses it.
+  if (context) {
+    try {
+      const cookies = await context.cookies('https://open.spotify.com');
+      if (!cookies.find(c => c.name === 'sp_dc')) {
+        console.log('[MANUAL NAV] Spotify not logged in — stopping auto-return');
+        logoutDetected = true;
+        if (!isPaused) { isPaused = true; pausedAt = Date.now(); }
+        await updateAgentStatus(2);
+        emit('playback-changed', { playing: false });
+        emit('interruption', {
+          reason: 'Not logged into Spotify — please login in the browser and click Play',
+          level: 'error',
+          allowPlay: true,
+          ui: { status: 'PAUSED', label: 'LOGIN REQUIRED', title: 'Login to Spotify' }
+        });
+        return;
+      }
+    } catch (e) {
+      console.log('[MANUAL NAV] Login check error:', e.message);
+    }
+  }
+
   const origUrl = currentPlaylist.spotify_url;
   navigatingBack = true;
   manualNavInterrupted = true;
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  const maxAttempts = autoRetryEnabled ? 2 : 1;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     manualNavAttempts = attempt;
     console.log(`[MANUAL NAV] Auto-return attempt ${attempt}/2 to ${origUrl}`);
     emit('interruption', {
@@ -987,10 +1070,12 @@ async function autoReturnToPlaylist() {
         manualNavAttempts = 0;
         navigatingBack = false;
         lastKnownPlaying = true;
+        navCooldownUntil = Date.now() + 5000; // ignore URL changes for 5s after auto-return
         if (isPaused && pausedAt) { pausedAccumulatedMs += Date.now() - pausedAt; pausedAt = null; }
         isPaused = false;
         emit('interruption', { clear: true });
         emit('playback-changed', { playing: true });
+        await updateAgentStatus(1);
         return;
       }
     } catch (e) {
@@ -1020,8 +1105,7 @@ async function autoReturnToPlaylist() {
 }
 
 async function notifyManualNavFailed() {
-  console.log('[TODO] notifyManualNavFailed — API endpoint not yet configured');
-  // TODO: replace with real API call when endpoint is provided
+  await updateAgentStatus(3);
 }
 
 async function runLoop() {
@@ -1046,15 +1130,31 @@ async function runLoop() {
       }
 
       // Detect when user manually navigates to a different playlist in the browser
-      if (!navigatingBack && currentPage && !currentPage.isClosed() && playDurationSeconds) {
+      if (!navigatingBack && currentPage && !currentPage.isClosed() && playDurationSeconds &&
+          Date.now() > navCooldownUntil) {
         const currentUrl = currentPage.url();
-        if (currentUrl && currentUrl !== lastKnownUrl &&
-            currentUrl.includes('open.spotify.com') &&
-            !currentUrl.includes('about:blank')) {
+        if (currentUrl && currentUrl !== lastKnownUrl && !currentUrl.includes('about:blank')) {
           lastKnownUrl = currentUrl;
-          lastKnownPlaying = false;
-          console.log('Manual navigation detected — auto-returning to:', currentPlaylist?.title);
-          await autoReturnToPlaylist();
+
+          // Spotify login/auth redirect — user is not logged into Spotify
+          const isLoginPage = currentUrl.includes('accounts.spotify.com') ||
+                              currentUrl.includes('/login') ||
+                              currentUrl.includes('/signup');
+          if (isLoginPage) {
+            console.log('[NAV] Spotify login page detected — user is not logged in');
+            logoutDetected = true;
+            emit('playback-changed', { playing: false });
+            emit('interruption', {
+              reason: 'Not logged into Spotify — please login in the browser and click Play',
+              level: 'error',
+              allowPlay: true,
+              ui: { status: 'PAUSED', label: 'LOGIN REQUIRED', title: 'Login to Spotify' }
+            });
+          } else if (currentUrl.includes('open.spotify.com')) {
+            lastKnownPlaying = false;
+            console.log('Manual navigation detected — auto-returning to:', currentPlaylist?.title);
+            await autoReturnToPlaylist();
+          }
         }
       }
 
@@ -1066,7 +1166,10 @@ async function runLoop() {
           return (btn.getAttribute('aria-label') || '').toLowerCase().includes('pause');
         }).catch(() => null);
 
-        if (nowPlaying !== null && lastKnownPlaying !== null && nowPlaying !== lastKnownPlaying) {
+        if (nowPlaying !== null && lastKnownPlaying !== null && nowPlaying !== lastKnownPlaying
+            && !(logoutDetected && nowPlaying)) {
+          // Note: logoutDetected && nowPlaying is suppressed — the Spotify mini player
+          // stays visible on the home page after logout and would otherwise reset the UI.
           emit('playback-changed', { playing: nowPlaying });
           console.log('Browser playback changed:', nowPlaying ? 'playing' : 'paused');
 
@@ -1076,31 +1179,42 @@ async function runLoop() {
             pausedAt = Date.now();
             browserPauseInterrupted = true;
 
-            console.log(
-              '[PLAYBACK PAUSED] Trying automatic recovery...'
-            );
+            // Check Spotify login before attempting any recovery
+            let spotifyLoggedIn = true;
+            if (context) {
+                try {
+                    const cookies = await context.cookies('https://open.spotify.com');
+                    spotifyLoggedIn = !!cookies.find(c => c.name === 'sp_dc');
+                } catch (e) {}
+            }
 
-            const resumed = await tryAutoResumePlayback();
-
-            if (!resumed) {
-
+            if (!spotifyLoggedIn) {
+                console.log('[PLAYBACK PAUSED] Spotify not logged in');
+                logoutDetected = true;
+                await updateAgentStatus(2);
                 emit('interruption', {
-                    reason: 'Playback paused — automatic recovery failed',
+                    reason: 'Not logged into Spotify — please login in the browser and click Play',
                     level: 'error',
-                    notify: true,
-                    ui: {
-                        status: 'PAUSED',
-                        label: 'PAUSED',
-                        title: currentPlaylist?.title || '—'
-                    }
+                    allowPlay: true,
+                    ui: { status: 'PAUSED', label: 'LOGIN REQUIRED', title: 'Login to Spotify' }
                 });
-
-                await notifyPlaybackPauseFailed();
+            } else {
+                console.log('[PLAYBACK PAUSED] Trying automatic recovery...');
+                const resumed = await tryAutoResumePlayback();
+                if (!resumed) {
+                    await updateAgentStatus(2);
+                    await notifyPlaybackPauseFailed();
+                    emit('interruption', {
+                        reason: 'Playback paused — click Play to resume',
+                        ui: { status: 'PAUSED', label: 'PAUSED', title: currentPlaylist?.title || '—' }
+                    });
+                }
             }
         } else if (nowPlaying && isPaused) {
             if (pausedAt) pausedAccumulatedMs += Date.now() - pausedAt;
             pausedAt = null;
             isPaused = false;
+            await updateAgentStatus(1);
             // Browser-initiated resume — clear the pause message if it was set
             if (browserPauseInterrupted) {
               browserPauseInterrupted = false;
@@ -1211,8 +1325,9 @@ async function runLoop() {
       // Start next playlist when nothing is playing
       if (!currentPage) {
         if (browserClosed) {
-          // After 2 failed attempts: call API, show message, wait for manual restart
-          if (autoRestartAttempts >= 2) {
+          // After max attempts: call API, show message, wait for manual restart
+          const maxRestarts = autoRetryEnabled ? 2 : 0;
+          if (autoRestartAttempts >= maxRestarts) {
             await delay(2000);
             continue;
           }
@@ -1220,8 +1335,8 @@ async function runLoop() {
           const now = Date.now();
           if (now - lastAutoRestartAt >= 5000) {
             lastAutoRestartAt = now;
-            autoRestartAttempts++; // count this attempt (limit applies to Chrome-alive AND Chrome-dead paths)
-            console.log(`Auto-restart attempt ${autoRestartAttempts}/2...`);
+            autoRestartAttempts++;
+            console.log(`Auto-restart attempt ${autoRestartAttempts}/${maxRestarts}...`);
             browserClosed = false;
             nextPlaylist = currentPlaylist || nextPlaylist;
             if (!nextPlaylist) firstFetch = true;
@@ -1255,7 +1370,7 @@ async function runLoop() {
           if (!recovered) {
             // autoRestartAttempts was already incremented in the auto-restart block above.
             // Check the limit here to decide whether to show the final error.
-            if (autoRestartAttempts >= 2) {
+            if (autoRestartAttempts >= (autoRetryEnabled ? 2 : 0)) {
               // Both attempts exhausted — call API and show final message
               await notifyBrowserRestartFailed();
               emit('interruption', {
@@ -1306,13 +1421,14 @@ async function runLoop() {
 
       if (msg.type === 'config' && !configReceived) {
         configReceived = true;
-        currentDuration = Number(msg.duration || 10);
-        userBrowser     = msg.browser  || 'chrome';
-        API_BASE        = msg.apiBase  || API_BASE;
-        authToken       = msg.token    || null;
-        API_USERNAME    = msg.email    || null;
-        API_PASSWORD    = msg.password || null;
-        console.log('Config received — browser:', userBrowser, 'mode:', msg.mode, 'token:', !!authToken);
+        currentDuration  = Number(msg.duration || 10);
+        userBrowser      = msg.browser  || 'chrome';
+        API_BASE         = msg.apiBase  || API_BASE;
+        authToken        = msg.token    || null;
+        API_USERNAME     = msg.email    || null;
+        API_PASSWORD     = msg.password || null;
+        autoRetryEnabled = msg.autoRetry !== false;
+        console.log('Config received — browser:', userBrowser, 'autoRetry:', autoRetryEnabled, 'mode:', msg.mode);
         if (msg.mode === 'start-now') startPlayback = true;
         resolve();
       }
@@ -1326,6 +1442,11 @@ async function runLoop() {
         startPlayback = true;
       }
 
+      if (msg.type === 'set-auto-retry') {
+        autoRetryEnabled = msg.autoRetry === true;
+        console.log('[CONFIG] autoRetry set to:', autoRetryEnabled);
+      }
+
       if (msg.type === 'pause-playback') {
         if (!isPaused) {
           isPaused = true;
@@ -1333,10 +1454,12 @@ async function runLoop() {
           lastKnownPlaying = false; // app-initiated — don't re-notify
           console.log('Pause requested');
           setSpotifyPlayback('pause').catch(() => {});
+          updateAgentStatus(2).catch(() => {});
         }
       }
 
       if (msg.type === 'resume-playback') {
+        logoutDetected = false; // user explicitly pressed Play — clear logout gate
         if (manualNavInterrupted && currentPlaylist?.spotify_url && currentPage && !currentPage.isClosed()) {
           // User pressed Play after manually navigating away — restore our original playlist
           manualNavInterrupted = false;
@@ -1358,6 +1481,7 @@ async function runLoop() {
               isPaused = false;
               emit('interruption', { clear: true });
               emit('playback-changed', { playing: true });
+              await updateAgentStatus(1);
               console.log('Restored original playlist:', origUrl);
             } else {
               emit('interruption', { reason: 'Playback did not start — try again' });
@@ -1381,6 +1505,7 @@ async function runLoop() {
             emit('interruption', { clear: true });
           }
           setSpotifyPlayback('play').catch(() => {});
+          updateAgentStatus(1).catch(() => {});
         }
       }
 
