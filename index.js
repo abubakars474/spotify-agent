@@ -122,6 +122,10 @@ ipcMain.handle('login', async (_e, { email, password }) => {
     form.append('password', password);
 
     const res = await fetch(`${API_BASE}login`, { method: 'POST', body: form });
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      return { success: false, message: `Server error (${res.status}) — please try again later` };
+    }
     const json = await res.json();
 
     if (res.ok && json?.data?.token) {
@@ -136,7 +140,7 @@ ipcMain.handle('login', async (_e, { email, password }) => {
       message: json?.message || `Login failed (HTTP ${res.status})`
     };
   } catch (err) {
-    return { success: false, message: err.message };
+    return { success: false, message: 'Could not reach the server — check your connection and try again' };
   }
 });
 
