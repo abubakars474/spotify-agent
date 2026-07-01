@@ -21,6 +21,7 @@ let autoRetryEnabled = true;
 
 
 const API_BASE = 'https://myspotify.anvs.xyz/api/v1/';
+//const API_BASE = 'http://myspotify.loc:8000/api/v1/';
 
 // ============================================================
 // Chrome launcher (CDP)

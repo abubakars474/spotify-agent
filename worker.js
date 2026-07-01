@@ -331,6 +331,7 @@ function seedWidevine(targetProfile) {
 // API CONFIG (now passed in via 'config' message)
 // ============================================================
 let API_BASE     = 'https://myspotify.anvs.xyz/api/v1/';
+//let API_BASE = 'http://myspotify.loc:8000/api/v1/'
 let API_USERNAME = null;
 let API_PASSWORD = null;
 let authToken    = null;
@@ -348,6 +349,7 @@ async function apiLogin() {
   form.append('password', API_PASSWORD);
 
   const res = await fetch(`${API_BASE}login`, { method: 'POST', body: form });
+  //console.log(res)
   const json = await res.json();
   if (json?.data?.token) {
     authToken = json.data.token;
@@ -357,39 +359,155 @@ async function apiLogin() {
   throw new Error('Worker re-login failed: ' + JSON.stringify(json));
 }
 
-async function apiFetchPlaylists() {
-  if (!authToken) await apiLogin();
-  const res = await fetch(`${API_BASE}playlists?paging=1`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${authToken}` }
-  });
-  if (res.status === 401) { authToken = null; await apiLogin(); return apiFetchPlaylists(); }
-  const json = await res.json();
-  return {
-    playlists: json?.data?.play_lists || [],
-    duration:  json?.data?.playing_duration ?? null
-  };
+// async function apiFetchPlaylists() {
+//   if (!authToken) await apiLogin();
+//   const res = await fetch(`${API_BASE}playlists?paging=1`, {
+//     method: 'POST',
+//     headers: { Authorization: `Bearer ${authToken}` }
+//   });
+//   if (res.status === 401) { authToken = null; await apiLogin(); return apiFetchPlaylists(); }
+//   const json = await res.json();
+//   return {
+//     playlists: json?.data?.play_lists || [],
+//     duration:  json?.data?.playing_duration ?? null
+//   };
+// }
+
+async function apiFetchPlaylists(retry = true) {
+  try {
+    if (!authToken) await apiLogin();
+
+    const res = await fetch(`${API_BASE}playlists?paging=1`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${authToken}`
+      }
+    });
+
+    if (res.status === 401) {
+      if (!retry) {
+        throw new Error('Authentication failed. Please login again.');
+      }
+
+      authToken = null;
+      await apiLogin();
+      return apiFetchPlaylists(false);
+    }
+
+    if (!res.ok) {
+      throw new Error(`Server returned ${res.status}`);
+    }
+
+    const json = await res.json();
+
+    return {
+      success: true,
+      playlists: json?.data?.play_lists || [],
+      duration: json?.data?.playing_duration ?? null
+    };
+
+  } catch (err) {
+    //console.log()
+    return {
+      success: false,
+      code: 'PLAYLIST_FETCH_FAILED',
+      message: err.message,
+      playlists: [],
+      duration: null
+    };
+  }
 }
 
-async function apiNotifyPlayed(playlist) {
-  if (!playlist) return null;
-  if (!authToken) await apiLogin();
-  const form = new FormData();
-  if (playlist.id) form.append('play_list_id', String(playlist.id));
+async function apiNotifyPlayed(playlist, retry = true) {
   try {
+    if (!playlist) {
+      return {
+        success: false,
+        code: 'INVALID_PLAYLIST',
+        message: 'Playlist is required',
+        next_play_list: null
+      };
+    }
+
+    if (!authToken) await apiLogin();
+
+    const form = new FormData();
+    if (playlist.id) {
+      form.append('play_list_id', String(playlist.id));
+    }
+
     const res = await fetch(`${API_BASE}playlists/play`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${authToken}` },
+      headers: {
+        Authorization: `Bearer ${authToken}`
+      },
       body: form
     });
-    if (res.status === 401) { authToken = null; await apiLogin(); return apiNotifyPlayed(playlist); }
+
+    // 401 retry
+    if (res.status === 401) {
+      if (!retry) {
+        return {
+          success: false,
+          code: 'AUTH_FAILED',
+          message: 'Authentication failed',
+          next_play_list: null
+        };
+      }
+
+      authToken = null;
+      await apiLogin();
+      return apiNotifyPlayed(playlist, false);
+    }
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      return {
+        success: false,
+        code: 'SERVER_ERROR',
+        message: `Server returned ${res.status}`,
+        debug: text.slice(0, 200),
+        next_play_list: null
+      };
+    }
+
+    const contentType = res.headers.get('content-type') || '';
+
+    if (!contentType.includes('application/json')) {
+      const text = await res.text();
+      return {
+        success: false,
+        code: 'INVALID_RESPONSE',
+        message: 'Non-JSON response from server',
+        debug: text.slice(0, 200),
+        next_play_list: null
+      };
+    }
+
     const json = await res.json();
+
     console.log('Notified server: playlist', playlist.id, 'played');
-    if (json?.data?.playing_duration != null) currentDuration = json.data.playing_duration;
-    return json?.data?.next_play_list || null;
-  } catch (e) {
-    console.log('Notify failed:', e.message);
-    return null;
+
+    if (json?.data?.playing_duration != null) {
+      currentDuration = json.data.playing_duration;
+    }
+
+    return {
+      success: true,
+      code: 'OK',
+      message: 'Notified successfully',
+      next_play_list: json?.data?.next_play_list || null,
+      data: json?.data || null
+    };
+
+  } catch (err) {
+    return {
+      success: false,
+      code: 'PLAY_NOTIFY_FAILED',
+      message: err.message || 'Unknown error',
+      next_play_list: null,
+      duration: null
+    };
   }
 }
 
@@ -416,7 +534,26 @@ async function fetchTask() {
 
   firstFetch = false;
   console.log('Fetching first playlist from API...');
-  const { playlists, duration } = await apiFetchPlaylists();
+  //const { playlists, duration } = await apiFetchPlaylists();
+  const result = await apiFetchPlaylists();
+  console.log(result);
+
+  if (!result.success) {
+    emit('interruption', {
+      reason: result.message,
+      level: 'error'
+    });
+
+    // Notify your UI
+    emit('api-error', {
+      code: result.code,
+      message: result.message
+    });
+
+    return null;
+  }
+
+  const { playlists, duration } = result;
 
   if (duration != null) {
     currentDuration = duration;
@@ -667,22 +804,54 @@ async function stopPlayback() {
 
   const finished = currentPlaylist;
 
-  // Navigate away instead of closing — keeps a single tab open for the next playlist
-  await currentPage.goto('about:blank', { timeout: 5000 }).catch(() => {});
+  try {
+    // Navigate away instead of closing — keeps tab alive
+    await currentPage.goto('about:blank', { timeout: 5000 }).catch(() => {});
 
-  const next = await apiNotifyPlayed(finished);
-  if (next) nextPlaylist = next;
+    const result = await apiNotifyPlayed(finished);
 
-  currentPlaylist = null;
-  currentPage = null;
-  currentTaskId = null;
-  playDurationSeconds = null;
-  lastKnownPlaying = null;
-  lastKnownUrl = null;
-  navCooldownUntil = 0;
-  playlistTrackIds = new Set();
-  offPlaylistCount = 0;
-  offPlaylistWarned = false;
+    if (!result.success) {
+      emit('interruption', {
+        reason: result.message,
+        level: 'error'
+      });
+
+      emit('api-error', {
+        code: result.code,
+        message: result.message
+      });
+
+      return;
+    }
+
+    if (result.next_play_list) {
+      nextPlaylist = result.next_play_list;
+    }
+
+  } catch (err) {
+    emit('api-error', {
+      code: 'STOP_PLAYBACK_FAILED',
+      message: err.message
+    });
+
+    emit('interruption', {
+      reason: err.message,
+      level: 'error'
+    });
+
+  } finally {
+    // 🔥 ALWAYS reset state (critical fix)
+    currentPlaylist = null;
+    currentPage = null;
+    currentTaskId = null;
+    playDurationSeconds = null;
+    lastKnownPlaying = null;
+    lastKnownUrl = null;
+    navCooldownUntil = 0;
+    playlistTrackIds = new Set();
+    offPlaylistCount = 0;
+    offPlaylistWarned = false;
+  }
 }
 
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
